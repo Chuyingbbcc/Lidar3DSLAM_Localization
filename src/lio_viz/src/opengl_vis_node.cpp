@@ -13,6 +13,46 @@
 
 using namespace std;
 
+static GLuint compile_shader(GLenum shader_type,
+                            const char* shader_source,
+                            const char* name,
+                            const rclcpp::Logger& logger){
+    GLuint shader = glCreateShader(shader_type);
+    glShaderSource(shader, 1, &shader_source, nullptr);
+    glCompileShader(shader);
+    GLint success = 0;
+    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
+    if(!success){
+        GLint log_len = 0;
+        glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &log_len);
+        std::string log(log_len, '\0');
+        glGetShaderInfoLog(shader, log_len, nullptr, &log[0]);
+        RCLCPP_ERROR(logger, "Shader compile error (%s): %s", name, log.c_str());
+        glDeleteShader(shader);
+        return 0;
+    }
+    return shader;
+}
+
+static GLuint link_program(GLuint vs, GLuint fs, const rclcpp::Logger &logger) {
+    GLuint prog = glCreateProgram();
+    glAttachShader(prog, vs);
+    glAttachShader(prog, fs);
+    glLinkProgram(prog);
+
+    GLint success = 0;
+    glGetProgramiv(prog, GL_LINK_STATUS, &success);
+    if (!success) {
+        GLint log_len = 0;
+        glGetProgramiv(prog, GL_INFO_LOG_LENGTH, &log_len);
+        std::string log(log_len, '\0');
+        glGetProgramInfoLog(prog, log_len, nullptr, &log[0]);
+        RCLCPP_ERROR(logger, "Program link error: %s", log.c_str());
+        glDeleteProgram(prog);
+        return 0;
+    }
+    return prog;
+}
 OpenGLPointCloudNode::OpenGLPointCloudNode()
     : rclcpp::Node("opengl_pointcloud_node"),
       window_(nullptr),
@@ -27,14 +67,32 @@ OpenGLPointCloudNode::OpenGLPointCloudNode()
     RCLCPP_INFO(this->get_logger(), "Visualization node started. Waiting for pcd_path messages...");
 }
 
+OpenGLPointCloudNode::~OpenGLPointCloudNode() {
+  if(vbo_){
+  glDeleteBuffers(1, &vbo_);
+  }
+  if(vao_){
+   glDeleteVertexArrays(1, &vao_);
+  }
+  if(shader_program_){
+    glDeleteShader(shader_program_);
+  }
+  if(window_){
+    glfwDestroyWindow(window_);
+    glfwTerminate();
+  }
+}
+
 bool OpenGLPointCloudNode::init_window() {
     if (!glfwInit()) {
         RCLCPP_ERROR(this->get_logger(), "GLFW init failed");
         return false;
     }
 
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
+    // Request OpenGL 3.3 core profile
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 
     window_ = glfwCreateWindow(2000,2000 , "Point Cloud Viz", nullptr, nullptr);
     if (!window_) {
@@ -44,14 +102,113 @@ bool OpenGLPointCloudNode::init_window() {
     }
 
     glfwMakeContextCurrent(window_);
-    glfwSwapInterval(1);
-    glEnable(GL_DEPTH_TEST);
-    glPointSize(2.0f);
 
+    // Load OpenGL functions with GLAD
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+        RCLCPP_ERROR(this->get_logger(), "Failed to initialize GLAD");
+        return false;
+    }
+
+    std::cout << "OpenGL Version: " << glGetString(GL_VERSION) << std::endl;
+    std::cout << "GLSL Version: "  << glGetString(GL_SHADING_LANGUAGE_VERSION) << std::endl;
+    std::cout << "Renderer: "      << glGetString(GL_RENDERER) << std::endl;
+
+    glEnable(GL_DEPTH_TEST);
+    glEnable(GL_PROGRAM_POINT_SIZE);  // allow gl_PointSize in shaders
+
+    // NEW: attach this object to the window, and set scroll callback
     glfwSetWindowUserPointer(window_, this);
     glfwSetScrollCallback(window_, &OpenGLPointCloudNode::scroll_callback);
 
+    if (!init_gl_resources()) {
+        RCLCPP_ERROR(this->get_logger(), "Failed to init GL resources");
+        return false;
+    }
     return true;
+}
+
+bool OpenGLPointCloudNode::init_gl_resources() {
+ const char* vs_src = R"(
+  #version 330 core
+  layout (location = 0) in vec3 a_position;
+  uniform mat4 u_mvp;
+  void main(){
+    gl_Position = u_mvp * vec4(a_position, 1.0);
+    gl_PointSize = 2.5;
+ }
+)";
+
+const char* fs_src =R"(
+ #version 330 core
+ out vec4 FragColor;
+ void main(){
+   FragColor = vec4(1.0, 1.0, 1.0, 1.0);
+ }
+)";
+
+auto logger = this->get_logger();
+
+//commpile shader
+GLuint vs = compile_shader(GL_VERTEX_SHADER, vs_src, "vertex", logger);
+if(!vs){
+return false;
+}
+GLuint fs = compile_shader(GL_FRAGMENT_SHADER, fs_src, "fragment", logger);
+if(!fs){
+  glDeleteShader(vs);
+  return false;
+}
+
+//link shader progam
+shader_program_ = link_program(vs, fs, logger);
+glDeleteShader(vs);
+glDeleteShader(fs);
+if(!shader_program_){
+return false;
+}
+
+//setup vbo & vao
+glGenVertexArrays(1, &vao_);
+glGenBuffers(1, &vbo_);
+if (!vao_ || !vbo_) {
+        RCLCPP_ERROR(logger, "Failed to create VAO/VBO");
+        return false;
+}
+glBindVertexArray(vao_);
+glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+
+//configure attribute layout
+glEnableVertexAttribArray(0);
+glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Point3f), (void*)0);
+
+//unbind
+    /*👍 We unbind because OpenGL is a global state machine:
+
+    Leaving VAO/VBO bound makes them vulnerable to accidental modification.
+
+    Unbinding ensures no later code changes attribute state unintentionally.*/
+
+glBindBuffer(GL_ARRAY_BUFFER, 0);
+glBindVertexArray(0);
+
+vbo_ready_ = false;
+num_points_gpu_ =0;
+
+return true;
+}
+
+void OpenGLPointCloudNode::upload_points_to_gpu(const std::vector<Point3f> &pts){
+  if(!vbo_)return;
+
+  //bind ptr data
+  glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+  glBufferData(GL_ARRAY_BUFFER, pts.size() * sizeof(float), pts.data(), GL_STATIC_DRAW);
+  glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+  num_points_gpu_ = pts.size();
+  vbo_ready_ = (num_points_gpu_ > 0);
+
+  RCLCPP_INFO(this->get_logger(), "Uploaded %zu points to GPU", num_points_gpu_);
 }
 
 void OpenGLPointCloudNode::on_pcd_path(const std_msgs::msg::String::SharedPtr msg) {
@@ -68,6 +225,8 @@ void OpenGLPointCloudNode::on_pcd_path(const std_msgs::msg::String::SharedPtr ms
         have_points_ = true;
     }
 
+    // Upload to GPU
+    upload_points_to_gpu(points_);
     RCLCPP_INFO(this->get_logger(), "Loaded %zu points", points_.size());
 }
 
@@ -185,50 +344,35 @@ void OpenGLPointCloudNode::render_frame(float t){
   glClearColor(0.05f, 0.05f, 0.1f, 1.0f);
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-  //Projection matrix
-  glMatrixMode(GL_PROJECTION);
-  glLoadIdentity();
-
-  float fov = 60.0f * M_PI / 180.0f;
-  float f = 1.0f /std::tan(fov/ 2.0f);
-
-  float z_near = 0.1f;
-  float z_far  = 100.0f;
-
-  float proj[16] = {
-     f / aspect, 0, 0, 0,
-     0, f, 0, 0,
-     0, 0, (z_far + z_near) / (z_near - z_far), -1,
-     0, 0, (2 * z_far * z_near) / (z_near - z_far), 0
-  };
-  glLoadMatrixf(proj);
-
-  //modelview MATRIX
-  glMatrixMode(GL_MODELVIEW);
-  glLoadIdentity();
-  glTranslatef(0.0f, 0.0f, -zoom_);
-  glRotatef(90.0f, 0.0f, 0.0f, 1.0f);
-  glRotatef(t * 10.0f, 0.0f, 1.0f, 0.0f);
-
-  vector<Point3f> ptrs;
-  {
-  std::lock_guard<std::mutex> lock(mutex_);
-  if(!have_points_){
-    glfwSwapBuffers(window_);
-    return;
+  if(!vbo_ready_ ||num_points_gpu_ ==0){
+   glfwSwapBuffers(window_);
+   return;
   }
-   ptrs = points_;
-  }
-  //rendering
-  glBegin(GL_POINTS);
-  for(auto& p: ptrs){
-      float c = 0.5f + 0.5f * p[2]; // z in [-1,1]
-      if (c < 0.0f) c = 0.0f;
-      if (c > 1.0f) c = 1.0f;
-      glColor3f(c, 1.0f - c, 0.5f);
-      glVertex3f(p[0], p[1], p[2]);
-  }
-  glEnd();
+  //Set up mvp
+  glm::mat4 proj = glm::perspective(
+  glm::radians(60.0f),
+  aspect,
+  0.1f,
+  100.0f);
+ glm::vec3 cam_pos(0.0f, zoom_ , 0.0); // z is point out  of the screen
+ glm::vec3 cam_target(0.0f, 0.0f, 0.0f);
+ glm::vec3 cam_up(0.0f, 0.0f, 1.0f); // y is on up
+ glm::mat4 view = glm::lookAt(cam_pos, cam_target, cam_up);
+
+ glm::mat4 model = glm::rotate(glm::mat4(1.0f), glm::radians(t*10.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+
+ glm::mat4 mvp = proj * view * model;
+
+ //draw
+ glUseProgram(shader_program_);
+ GLint loc_mvp = glGetUniformLocation(shader_program_, "u_mvp");
+ glUniformMatrix4fv(loc_mvp, 1, GL_FALSE, glm::value_ptr(mvp));
+
+  glBindVertexArray(vao_);
+  glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(num_points_gpu_));
+  glBindVertexArray(0);
+
+  glUseProgram(0);
   glfwSwapBuffers(window_);
 }
 
