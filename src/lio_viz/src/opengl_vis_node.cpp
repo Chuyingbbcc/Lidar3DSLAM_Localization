@@ -4,6 +4,7 @@
 //
 
 #include "opengl_vis_node.h"
+#include "../include/opengl_vis_node.h"
 
 #include <iostream>
 #include <fstream>
@@ -119,6 +120,8 @@ bool OpenGLPointCloudNode::init_window() {
     // NEW: attach this object to the window, and set scroll callback
     glfwSetWindowUserPointer(window_, this);
     glfwSetScrollCallback(window_, &OpenGLPointCloudNode::scroll_callback);
+    glfwSetMouseButtonCallback(window_, &OpenGLPointCloudNode::mouse_button_callback);
+    glfwSetCursorPosCallback(window_, &OpenGLPointCloudNode::cursor_pos_callback);
 
     if (!init_gl_resources()) {
         RCLCPP_ERROR(this->get_logger(), "Failed to init GL resources");
@@ -131,18 +134,43 @@ bool OpenGLPointCloudNode::init_gl_resources() {
  const char* vs_src = R"(
   #version 330 core
   layout (location = 0) in vec3 a_position;
+  layout (location = 1) in float a_intensity;
+
   uniform mat4 u_mvp;
+  out float v_intensity;
   void main(){
     gl_Position = u_mvp * vec4(a_position, 1.0);
     gl_PointSize = 2.5;
+    v_intensity =a_intensity;
  }
 )";
 
 const char* fs_src =R"(
  #version 330 core
+
+ in float v_intensity;
  out vec4 FragColor;
+
+ vec3 colormap(float t){
+  t= clamp(t, 0.0, 1.0);
+  if (t < 0.33) {
+    // dark blue -> cyan
+    float u = t / 0.33;
+    return mix(vec3(0.0, 0.0, 0.3), vec3(0.0, 1.0, 1.0), u);
+  } else if (t < 0.66) {
+    // cyan -> yellow
+    float u = (t - 0.33) / 0.33;
+    return mix(vec3(0.0, 1.0, 1.0), vec3(1.0, 1.0, 0.0), u);
+  } else {
+    // yellow -> white
+    float u = (t - 0.66) / 0.34;
+    return mix(vec3(1.0, 1.0, 0.0), vec3(1.0, 1.0, 1.0), u);
+  }
+ }
  void main(){
-   FragColor = vec4(1.0, 1.0, 1.0, 1.0);
+   float t = v_intensity;
+   vec3 color =colormap(t);
+   FragColor = vec4(color, 1.0);
  }
 )";
 
@@ -179,7 +207,17 @@ glBindBuffer(GL_ARRAY_BUFFER, vbo_);
 
 //configure attribute layout
 glEnableVertexAttribArray(0);
-glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Point3f), (void*)0);
+glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(PointVertex), (void*)0);
+
+glEnableVertexAttribArray(1);
+    glVertexAttribPointer(
+      1,
+      1,
+      GL_FLOAT,
+      GL_FALSE,
+      sizeof(PointVertex),
+      (void*)(3 * sizeof(float)) // offset
+    );
 
 //unbind
     /*👍 We unbind because OpenGL is a global state machine:
@@ -197,12 +235,12 @@ num_points_gpu_ =0;
 return true;
 }
 
-void OpenGLPointCloudNode::upload_points_to_gpu(const std::vector<Point3f> &pts){
+void OpenGLPointCloudNode::upload_points_to_gpu(const std::vector<PointVertex> &pts){
   if(!vbo_)return;
 
   //bind ptr data
   glBindBuffer(GL_ARRAY_BUFFER, vbo_);
-  glBufferData(GL_ARRAY_BUFFER, pts.size() * sizeof(float), pts.data(), GL_STATIC_DRAW);
+  glBufferData(GL_ARRAY_BUFFER, pts.size() * sizeof(PointVertex), pts.data(), GL_STATIC_DRAW);
   glBindBuffer(GL_ARRAY_BUFFER, 0);
 
   num_points_gpu_ = pts.size();
@@ -212,7 +250,7 @@ void OpenGLPointCloudNode::upload_points_to_gpu(const std::vector<Point3f> &pts)
 }
 
 void OpenGLPointCloudNode::on_pcd_path(const std_msgs::msg::String::SharedPtr msg) {
-    std::vector<Point3f> new_points;
+    std::vector<PointVertex> new_points;
 
     if (!load_point_cloud(msg->data, new_points)) {
         RCLCPP_ERROR(this->get_logger(), "Failed to load file: %s", msg->data.c_str());
@@ -230,7 +268,7 @@ void OpenGLPointCloudNode::on_pcd_path(const std_msgs::msg::String::SharedPtr ms
     RCLCPP_INFO(this->get_logger(), "Loaded %zu points", points_.size());
 }
 
-bool OpenGLPointCloudNode::load_point_cloud(const std::string &path, std::vector<Point3f> &out)
+bool OpenGLPointCloudNode::load_point_cloud(const std::string &path, std::vector<PointVertex> &out)
 {
     // Open as binary file
     std::ifstream fin(path, std::ios::binary);
@@ -279,14 +317,21 @@ bool OpenGLPointCloudNode::load_point_cloud(const std::string &path, std::vector
     }
 
     // Convert to raw xyz points (ignore intensity / extra fields)
-    std::vector<Point3f> raw;
+    std::vector<PointVertex> raw;
     raw.reserve(num_points);
 
     for (std::size_t i = 0; i < num_points; ++i) {
         const float x = buffer[i * fields_per_point + 0];
         const float y = buffer[i * fields_per_point + 1];
         const float z = buffer[i * fields_per_point + 2];
-        raw.push_back({x, y, z});
+        float intensity =1.0f;
+        if (fields_per_point >=4) {
+          intensity = buffer[i*fields_per_point+3];
+        }
+        else {
+          intensity = z;
+        }
+        raw.push_back({{x, y, z},intensity});
     }
 
 
@@ -298,9 +343,9 @@ bool OpenGLPointCloudNode::load_point_cloud(const std::string &path, std::vector
     float maxz = std::numeric_limits<float>::lowest();
 
     for (auto &p : raw) {
-        minx = std::min(minx, p[0]); maxx = std::max(maxx, p[0]);
-        miny = std::min(miny, p[1]); maxy = std::max(maxy, p[1]);
-        minz = std::min(minz, p[2]); maxz = std::max(maxz, p[2]);
+        minx = std::min(minx, p.p_[0]); maxx = std::max(maxx, p.p_[0]);
+        miny = std::min(miny, p.p_[1]); maxy = std::max(maxy, p.p_[1]);
+        minz = std::min(minz, p.p_[2]); maxz = std::max(maxz, p.p_[2]);
     }
 
     float cx = 0.5f * (minx + maxx);
@@ -319,13 +364,20 @@ bool OpenGLPointCloudNode::load_point_cloud(const std::string &path, std::vector
     out.reserve(raw.size());
 
     for (auto &p : raw) {
-        out.push_back({
-            (p[0] - cx) * scale,
-            (p[1] - cy) * scale,
-            (p[2] - cz) * scale
-        });
+        Point3f point = p.p_;
+        PointVertex vertex;
+        point[0] = (point[0] - cx) * scale;
+        point[1] = (point[1] - cy) * scale;
+        point[2] = (point[2] - cz) * scale;
+        vertex.p_ = point;
+        if(fields_per_point >=4) {
+            vertex.intensity_ = p.intensity_;
+        }
+        else {
+           vertex.intensity_ = point[2];
+        }
+        out.push_back(vertex);
     }
-
     return true;
 }
 
@@ -359,8 +411,10 @@ void OpenGLPointCloudNode::render_frame(float t){
  glm::vec3 cam_up(0.0f, 0.0f, 1.0f); // y is on up
  glm::mat4 view = glm::lookAt(cam_pos, cam_target, cam_up);
 
- glm::mat4 model = glm::rotate(glm::mat4(1.0f), glm::radians(t*10.0f), glm::vec3(0.0f, 0.0f, 1.0f));
-
+ //glm::mat4 model = glm::rotate(glm::mat4(1.0f), glm::radians(t*10.0f), glm::vec3(0.0f, 0.0f, 1.0f));
+  glm ::mat4 model(1.0f);
+    model = glm::rotate(model, glm::radians(yaw_deg_), glm::vec3(0.0f, 0.0f, 1.0f));
+    model = glm::rotate(model, glm::radians(pitch_deg_), glm::vec3(1.0f, 0.0f, 0.0f));
  glm::mat4 mvp = proj * view * model;
 
  //draw
@@ -392,6 +446,41 @@ void OpenGLPointCloudNode::scroll_callback(GLFWwindow* window,
     // Clamp zoom between [1, 50]
     if (self->zoom_ < 1.0f)  self->zoom_ = 1.0f;
     if (self->zoom_ > 50.0f) self->zoom_ = 50.0f;
+}
+
+void OpenGLPointCloudNode::mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
+(void)mods;
+auto* self = static_cast<OpenGLPointCloudNode*>(glfwGetWindowUserPointer(window));
+if(!self) return;
+if(button == GLFW_MOUSE_BUTTON_LEFT) {
+   if(action == GLFW_PRESS) {
+      self->dragging_ =true;
+      glfwGetCursorPos(window, &self->last_x_, &self->last_y_);
+   }
+   else if(action == GLFW_RELEASE) {
+      self->dragging_ =false;
+   }
+}
+}
+
+void OpenGLPointCloudNode::cursor_pos_callback(GLFWwindow* window, double xpos, double ypos) {
+  auto* self = static_cast<OpenGLPointCloudNode*>(glfwGetWindowUserPointer(window));
+  if (!self)return;
+  if(!self->dragging_)return;
+
+   const double dx = xpos - self->last_x_;
+   const double dy = ypos - self->last_y_;
+   self->last_x_ = xpos;
+   self->last_y_ = ypos;
+
+   const float sens =0.2f;
+
+   self->yaw_deg_ += sens * static_cast<float>(dx);
+   self->pitch_deg_ += sens * static_cast<float>(dy);
+
+   //clamp
+   if (self->pitch_deg_ >89.0) self->pitch_deg_ = 89.0f;
+   if (self->pitch_deg_ < -89.0) self->pitch_deg_ = -89.0f;
 }
 
 int main(int argc , char **argv) {
