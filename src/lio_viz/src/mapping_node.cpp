@@ -3,6 +3,7 @@
 //
 #include "mapping_node.h"
 #include <iostream>
+#include "io/ros_io_offline.cpp"
 
 using namespace std::chrono_literals;
 
@@ -38,7 +39,29 @@ void MappingNode::on_timer(){
 
 int main(int argc, char **argv) {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<MappingNode>());
+  //rclcpp::spin(std::make_shared<MappingNode>());
+
+  const std::string ros_bag_path = "/media/chuchu/Extreme Pro/ros_bag_example";
+  RosIoOffline::IoOptions options;
+  options.bag_folder = ros_bag_path;
+  RosIoOffline io(options);
+  io.onImu([](const sensor_msgs::msg::Imu& imu, int64_t t_ns) {
+  (void)t_ns;
+  // push into imu buffer...
+   std::cout << "imu stamp " << imu.header.stamp.sec << "\n";
+  });
+
+  io.onLidar([](const sensor_msgs::msg::PointCloud2& cloud, int64_t t_ns) {
+      (void)t_ns;
+      const size_t npts = (size_t)cloud.width * (size_t)cloud.height;
+      std::cout << "cloud points=" << npts << " frame=" << cloud.header.frame_id << "\n";
+      // do mapping step...
+  });
+
+  if (!io.go()) {
+        std::cerr << "Failed reading bag.\n";
+  }
+
   rclcpp::shutdown();
   return 0;
 }
