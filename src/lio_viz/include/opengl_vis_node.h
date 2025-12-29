@@ -5,7 +5,7 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/string.hpp>
-#include <glad.h>
+#include "glad.h"
 #include <GLFW/glfw3.h>
 
 #include <glm/glm.hpp>
