@@ -18,8 +18,8 @@ class RegistrationBase {
     virtual ~RegistrationBase() = default;
 
     virtual void AddCloud(std::shared_ptr<const PointCloud> target){};
-    virtual void SetSourceCloud(std::shared_ptr<const PointCloud> source) = 0;
-    virtual bool Align(SE3f& init_pose);
+    virtual void SetSourceCloud(std::shared_ptr<const PointCloud> source){};
+    virtual bool Align(SE3f& init_pose){return true;};
 };
 
 enum class NearbyType {
@@ -28,7 +28,7 @@ enum class NearbyType {
  };
 
 struct IncNDTOptions {
-   int max_iterations_ = 10;
+   int max_iterations_ = 20;
    float voxel_size_ = 1.0;
    float inv_voxel_size_ = 1.0;
    int min_effective_pts_ = 10;
@@ -47,6 +47,7 @@ class IncNDT final: public RegistrationBase {
 public:
     IncNDT();
     IncNDT(const IncNDTOptions& opts);
+    ~IncNDT() override = default;
 
     bool Align(SE3f& init_pose) override;
     void SetSourceCloud(std::shared_ptr<const PointCloud> source) override;
