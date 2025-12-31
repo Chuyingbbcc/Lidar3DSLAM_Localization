@@ -87,6 +87,9 @@ bool RosIoOffline::go() {
   while (reader.has_next()) {
     auto bag_msg = reader.read_next();
     ++total;
+    if(pc2_n >5) {
+      break;
+    }
 
     const std::string& topic_name = bag_msg->topic_name;
     const int64_t bag_time_ns = bag_msg->time_stamp;
