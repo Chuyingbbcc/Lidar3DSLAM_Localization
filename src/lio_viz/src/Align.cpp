@@ -10,8 +10,10 @@
 #include "point_cloud_utils.h"
 #include "../3rd_party/sophus/sophus/types.hpp"
 #include "so3.hpp"
+#include <map>
+#include <set>
 
-#define Debug_NDT
+//#define Debug_NDT
 using namespace std;
 
 IncNDT::IncNDT() {
@@ -133,15 +135,86 @@ bool IncNDT::Align(SE3f& init_pose) {
 }
 
 void IncNDT::UpdateVoxel(VoxelData& voxel_data) {
+  // if is the first lidar frame
+  if(!first_scan_processed) {
+    if(voxel_data.pts_.size() >1) {
+      math::computeMeanAndCov(voxel_data.pts_, voxel_data.mu_, voxel_data.sig_);
+      voxel_data.info_ = voxel_data.sig_.inverse();
+    }
+    else {
+      voxel_data.mu_ = voxel_data.pts_[0];
+      voxel_data.info_ = Mat3f::Identity() *1e2;
+    }
+    voxel_data.estimated_ = true;
+    voxel_data.pts_.clear();
+    return;
+  }
+  // if exceed the maximum point,skip
+  if(voxel_data.pts_.size() > opt_.max_pts_in_voxel_) {
+    return;
+  }
+  // if doesn't estimate before
+  if(!voxel_data.estimated_ && voxel_data.pts_.size() > opt_.min_pts_in_voxel_) {
+    math::computeMeanAndCov(voxel_data.pts_, voxel_data.mu_, voxel_data.sig_);
+    voxel_data.info_ = voxel_data.sig_.inverse();
+    voxel_data.estimated_ =true;
+    // old size;
+    voxel_data.num_pts_ = voxel_data.pts_.size();
+    voxel_data.pts_.clear();
+  }
+  // if already estimate,
+  else if (voxel_data.estimated_ && voxel_data.pts_.size() > opt_.min_pts_in_voxel_) {
+    Vec3f new_mu= Vec3f::Zero();
+    Mat3f new_sig = Mat3f::Zero();
+    math::updateMeanAndCov(voxel_data.pts_, voxel_data.num_pts_,  voxel_data.mu_, voxel_data.sig_, new_mu, new_sig);
+    voxel_data.mu_ = new_mu;
+    voxel_data.sig_ = new_sig;
+    voxel_data.num_pts_ += voxel_data.pts_.size();
+    voxel_data.pts_.clear();
 
+    Eigen::JacobiSVD<Mat3f> svd(voxel_data.sig_, Eigen::ComputeFullU | Eigen::ComputeFullV);
+    Vec3f lambda = svd.singularValues();
+    if (lambda[1] < lambda[0] * 1e-3) {
+      lambda[1] = lambda[0] * 1e-3;
+    }
+
+    if (lambda[2] < lambda[0] * 1e-3) {
+      lambda[2] = lambda[0] * 1e-3;
+    }
+
+    Mat3f inv_lambda = Vec3f(1.0 / lambda[0], 1.0 / lambda[1], 1.0 / lambda[2]).asDiagonal();
+    voxel_data.info_ = svd.matrixV() * inv_lambda * svd.matrixU().transpose();
+  }
 }
 
 void IncNDT::AddCloud(std::shared_ptr<const PointCloud> target) {
+  std::set<KeyType, less_vec<3>>active_key_set;
   //iterate each point(transformed points)
-  //find the grid the point belongs to
+  for(auto& p : (*target)) {
+    auto pt = ToVec3f(p);
+    //find the grid the point belongs to
+    auto key = CastToInt(Vec3f(pt * opt_.inv_voxel_size_));
+    auto it = pair_map_.find(key);
+    if(it == pair_map_.end()) {
+      //pop out the least used pair, push it to the map and LRU
+      cache_.push_front({key, {pt}});
+      pair_map_.insert({key, cache_.begin()});
+      if(cache_.size() > opt_.capacity_) {
+        pair_map_.erase(cache_.back().first);
+        cache_.pop_back();
+      }
+    }
+    else {
+      it->second->second.AddPoint(pt);
+      cache_.splice(cache_.begin(), cache_, it->second);
+      it->second = cache_.begin();
+    }
+    active_key_set.emplace(key);
+  }
   //update mu and covariacne
-  //pop out the least used pair, push it to the map and LRU
-  //write out the map
+  for(auto& key : active_key_set) {
+    UpdateVoxel(pair_map_[key]->second);
+  }
 }
 
 void IncNDT::GenerateNearbyGrids() {
