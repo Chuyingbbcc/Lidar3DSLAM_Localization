@@ -87,7 +87,7 @@ bool RosIoOffline::go() {
   while (reader.has_next()) {
     auto bag_msg = reader.read_next();
     ++total;
-    if(pc2_n >5) {
+    if(pc2_n >3) {
       break;
     }
 
