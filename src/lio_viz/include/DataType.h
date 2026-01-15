@@ -5,7 +5,7 @@
 #include <vector>
 #include <so3.hpp>
 #include <se3.hpp>
-#include "point_cloud_utils.h"
+
 
 #ifndef EIGENTYPE_H
 #define EIGENTYPE_H
@@ -25,13 +25,7 @@ using Mat6f = Mat6<float>;
 using Mat3f = Mat3<float>;
 using KeyType = Eigen::Matrix<int, 3,1>;
 
-inline Vec3f ToVec3f(const  PointXYZIT& pt) {
-   Vec3f v;
-   v(0) = pt.x;
-   v(1) = pt.y;
-   v(2) = pt.z;
-   return v;
-}
+
 
 template <typename S, int n>
 inline Eigen::Matrix<int, n ,1>CastToInt(const  Eigen::Matrix<S,n,1>& value) {
