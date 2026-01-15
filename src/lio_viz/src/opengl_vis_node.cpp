@@ -140,7 +140,7 @@ bool OpenGLPointCloudNode::init_gl_resources() {
   out float v_intensity;
   void main(){
     gl_Position = u_mvp * vec4(a_position, 1.0);
-    gl_PointSize = 2.5;
+    gl_PointSize = 1;
     v_intensity =a_intensity;
  }
 )";
@@ -292,10 +292,10 @@ bool OpenGLPointCloudNode::load_point_cloud(const std::string &path, std::vector
     // Typical Velodyne/KITTI: x,y,z,intensity -> 4 floats per point
     // But we also allow 3 floats/point (xyz only) as a fallback.
     std::size_t fields_per_point = 0;
-    if (num_floats % 4 == 0) {
+    if (num_floats % 5 == 0) {
+        fields_per_point = 5;
+    } else if (num_floats % 4 == 0) {
         fields_per_point = 4;
-    } else if (num_floats % 3 == 0) {
-        fields_per_point = 3;
     } else {
         RCLCPP_ERROR(this->get_logger(),
                      "Unexpected binary layout in %s (floats=%zu, not divisible by 3 or 4)",

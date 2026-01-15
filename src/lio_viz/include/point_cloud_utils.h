@@ -10,6 +10,7 @@
 #include <memory>
 #include <algorithm>
 #include <utility>
+#include <unordered_set>
 
 #include <cstdint>
 #include <cstring>
@@ -17,6 +18,8 @@
 #include <unordered_map>
 #include <stdexcept>
 #include <cmath>
+#include <iostream>
+
 
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/msg/point_field.hpp>
@@ -46,7 +49,9 @@ class PointCloud {
     //access
     Point& operator[] (std::size_t i){return pts_[i];}
     const Point& operator[] (std::size_t i) const {return pts_[i];}
-
+    int64_t get_time() const {
+      return time_;
+    }
     //iteration
     auto begin() {return pts_.begin();}
     auto end() {return pts_.end();}
@@ -57,6 +62,7 @@ class PointCloud {
     void clear() {pts_.clear();}
     void reserve(size_t n) {pts_.reserve(n);}
     void resize(size_t n) {pts_.resize(n);}
+    void setTime(const int64_t t) {time_ = t;}
 
     void push_back(const Point& pt) {pts_.push_back(pt);}
 
@@ -74,6 +80,7 @@ class PointCloud {
     }
     private:
     std::vector<Point> pts_;
+    int64_t time_;
 };
 
 class CloudSlice {
@@ -116,10 +123,10 @@ struct FieldInfo {
 };
 
 inline std::unordered_map<std::string, FieldInfo>
-buildFieldMap(const sensor_msgs::msg::PointCloud2& msg) {
+buildFieldMap(const std::shared_ptr<sensor_msgs::msg::PointCloud2>msg) {
    std::unordered_map<std::string, FieldInfo> m;
-   m.reserve(msg.fields.size());
-   for (const auto& f: msg.fields) {
+   m.reserve(msg->fields.size());
+   for (const auto& f: msg->fields) {
       m.emplace(f.name, FieldInfo{f.offset, f.datatype});
    }
    return m;
@@ -132,13 +139,33 @@ inline T readScalar(const uint8_t* p, std::uint32_t offset) {
    return v;
 }
 
-inline bool pc2ToPointCloudXYZIT( const sensor_msgs::msg::PointCloud2& msg,
+struct PtrVoxelKey {
+  int32_t x, y,z;
+  bool operator ==(const PtrVoxelKey& o) const {
+    return o.x == x && o.y == y && o.z == z;
+  }
+};
+
+struct PtrVoxelHash {
+  size_t operator () (const PtrVoxelKey& k) const noexcept {
+     uint64_t h = 1469598103934665603ull;
+     auto mix = [&](uint32_t v){ h^=v, h*=1099511628211ull;};
+     mix((uint32_t)k.x);
+     mix((uint32_t)k.y);
+     mix((uint32_t)k.z);
+     return (size_t)h;
+  }
+};
+
+inline bool pc2ToPointCloudXYZIT( const std::shared_ptr<sensor_msgs::msg::PointCloud2> msg_ptr,
     PointCloud& out,
+    float voxel_size,
+    bool down_sample,
     bool skip_nan = true){
     out.clear();
-    if(msg.point_step ==0) return false;
+    if(msg_ptr->point_step ==0) return false;
 
-    const auto fmap =buildFieldMap(msg);
+    const auto fmap =buildFieldMap(msg_ptr);
     auto itx = fmap.find("x");
     auto ity = fmap.find("y");
     auto itz = fmap.find("z");
@@ -151,12 +178,15 @@ inline bool pc2ToPointCloudXYZIT( const sensor_msgs::msg::PointCloud2& msg,
     const auto itT = fmap.find("t");
     const auto itTime = fmap.find("time");
 
-    const std::size_t N = static_cast<std::size_t>(msg.width) * static_cast<std::size_t>(msg.height);
+    const std::size_t N = static_cast<std::size_t>(msg_ptr->width) * static_cast<std::size_t>(msg_ptr->height);
     out.reserve(N);
 
-    const std::uint8_t* base = msg.data.data();
+    const float inv = 1.0f / voxel_size;
+    std::unordered_set<PtrVoxelKey, PtrVoxelHash>seen;
+
+    const std::uint8_t* base = msg_ptr->data.data();
     for (std::size_t i = 0; i < N; ++i) {
-       const std::uint8_t* p = base + i*msg.point_step;
+       const std::uint8_t* p = base + i*msg_ptr->point_step;
 
        float x = readScalar<float>(p, itx->second.offset);
        float y = readScalar<float>(p, ity->second.offset);
@@ -164,6 +194,14 @@ inline bool pc2ToPointCloudXYZIT( const sensor_msgs::msg::PointCloud2& msg,
        if (skip_nan) {
           if (!(std::isfinite(x) && std::isfinite(y) && std::isfinite(z)))continue;
        }
+
+       PtrVoxelKey key{
+        (int32_t)std::floor(x *inv),
+           (int32_t)std::floor(y *inv),
+           (int32_t)std::floor(z *inv),
+       };
+
+       if(down_sample && !seen.insert(key).second)continue;
 
        float intensity = 0.f;
        if (has_intensity) {
@@ -198,6 +236,7 @@ inline bool pc2ToPointCloudXYZIT( const sensor_msgs::msg::PointCloud2& msg,
        }
        out.emplace_back(x,y,z,intensity,t);
     }
+   std::cout<<N<< " points read from msg. "<< out.size()<< " stored"<<std::endl;
    return true;
 }
 #endif //POINTCLOUDUTILS_H

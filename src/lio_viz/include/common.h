@@ -11,6 +11,7 @@
 #include <vector>
 #include "DataType.h"
 #include <Eigen/Core>
+#include "point_cloud_utils.h"
 
 
 // Generic N-dimensional point
@@ -83,6 +84,26 @@ struct less_vec {
 template<>
 inline bool less_vec<3>::operator()(const Eigen::Matrix<int, 3,1>& v1, const Eigen::Matrix<int, 3,1>& v2)const {
     return v1[0] < v2[0] || (v1[0] == v2[0] && v1[1] < v2[1]) || (v1[0] == v2[0] && v1[1] == v2[1] && v1[2] < v2[2]);
+}
+
+inline Vec3f ToVec3f(const  PointXYZIT& pt) {
+    Vec3f v;
+    v(0) = pt.x;
+    v(1) = pt.y;
+    v(2) = pt.z;
+    return v;
+}
+
+inline void transform(std::shared_ptr<PointCloud> pts, SE3f& t) {
+    int n = pts->size();
+    for(int i=0 ;i<n; i++) {
+        auto& ptr = (*pts)[i];
+        Vec3f p(ptr.x,ptr.y,ptr.z);
+        Vec3f q= t*p;
+        ptr.x = q[0];
+        ptr.y = q[1];
+        ptr.z = q[2];
+    }
 }
 
 namespace math {
