@@ -45,19 +45,19 @@ public:
 struct VoxelData {
    //EIGEN_MAKE_ALIGNED_OPERATOR_NEW
     //std::vector<Vec3f, Eigen::aligned_allocator<Vec3f>> pts_ ={};
-   std::vector<Vec3f>pts_={};
-   Vec3f mu_ = Vec3f::Zero();
-   Mat3f sig_ = Mat3f::Zero();
-   Mat3f info_ = Mat3f::Zero();
+   std::vector<Vec3d>pts_={};
+   Vec3d mu_ = Vec3d::Zero();
+   Mat3d sig_ = Mat3d::Zero();
+   Mat3d info_ = Mat3d::Zero();
    bool estimated_ = false;
    int num_pts_ = 0;
 
    VoxelData(){};
-   VoxelData(const Vec3f& pt) {
+   VoxelData(const Vec3d& pt) {
       pts_.emplace_back(pt);
       num_pts_++;
    }
-   void AddPoint(const Vec3f& pt) {
+   void AddPoint(const Vec3d& pt) {
       pts_.emplace_back(pt);
        if(!estimated_) {
            num_pts_++;
@@ -94,20 +94,28 @@ inline Vec3f ToVec3f(const  PointXYZIT& pt) {
     return v;
 }
 
-inline void transform(std::shared_ptr<PointCloud> pts, SE3f& t) {
+inline Vec3d ToVec3d(const PointXYZIT& pt) {
+    Vec3d v;
+    v(0) = static_cast<double>(pt.x);
+    v(1) = static_cast<double>(pt.y);
+    v(2) = static_cast<double>(pt.z);
+    return v;
+}
+
+inline void transform(std::shared_ptr<PointCloud> pts, SE3d& T) {
     int n = pts->size();
     for(int i=0 ;i<n; i++) {
         auto& ptr = (*pts)[i];
-        Vec3f p(ptr.x,ptr.y,ptr.z);
-        Vec3f q= t*p;
-        ptr.x = q[0];
-        ptr.y = q[1];
-        ptr.z = q[2];
+        Vec3d p_d(static_cast<double>(ptr.x),static_cast<double>(ptr.y),static_cast<double>(ptr.z));
+        Vec3d q= T*p_d;
+        ptr.x = static_cast<float>(q(0));
+        ptr.y = static_cast<float>(q(1));
+        ptr.z = static_cast<float>(q(2));
     }
 }
 
 namespace math {
-   void computeMeanAndCov(const std::vector<Vec3f>& pts, Vec3f& out_mu, Mat3f& out_sig);
-   void updateMeanAndCov(const std::vector<Vec3f>&pts, const int old_size, const Vec3f& old_mu ,const Mat3f& old_sig, Vec3f& out_mu, Mat3f& out_sig);
+   void computeMeanAndCov(const std::vector<Vec3d>& pts, Vec3d& out_mu, Mat3d& out_sig);
+   void updateMeanAndCov(const std::vector<Vec3d>&pts, const int old_size, const Vec3d& old_mu ,const Mat3d& old_sig, Vec3d& out_mu, Mat3d& out_sig);
 }
 #endif // COMMON_H

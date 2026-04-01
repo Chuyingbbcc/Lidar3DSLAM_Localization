@@ -12,13 +12,18 @@
 #include "Align.h"
 #include  "lidar_odometry.h"
 #include  "Imu_data.h"
+#include "KeyFrame.h"
+#include "GPS.h"
 #include   <thread>
+#include   <map>
+#include   <string>
 
-#include <thread>
-
+#include "../include/GPS.h"
+#include "../include/KeyFrame.h"
+#include "../include/point_cloud_utils.h"
 #include  "Lio/imu_buffer.h"
 #include  "Lio/LidarDoneProcessedQueue.h"
-#include "Lio/LidarPreProcessing.h"
+#include "Lio/LioPipe.h"
 #include "Lio/thread_pool.h"
 
 
@@ -196,8 +201,8 @@ protected:
 
 
 TEST(IO, TEST_LIDAR_PIPE) {
-   sleep(20);
-   const std::string ros_bag_path = "/media/chuchu/Extreme Pro/ros_bag_example";
+   //sleep(30);
+   const std::string ros_bag_path = "/media/chuchu/Extreme Pro/unordered_ros_bag";
 
    RosIoOffline::IoOptions options;
    options.bag_folder = ros_bag_path;
@@ -206,30 +211,144 @@ TEST(IO, TEST_LIDAR_PIPE) {
    LioOptions lio_options;
 
    ImuBuffer imu_buffer;
-   LidarPreProcessing lidar_pre_pipe(3);
+   LioPipe lio_pipe(3, 0.5, lio_options);
 
-   std::thread consumer([&]{lidar_pre_pipe.postProcess();});
+   size_t l_count =0;
+   lio_pipe.onPreprocess(
+      [](std::shared_ptr<sensor_msgs::msg::PointCloud2>msg_ptr, PointCloud& pc, const LioOptions& options) {
+         pc2ToPointCloudXYZIT(msg_ptr, pc, 0.7, true);
+      }
+    );
+   lio_pipe.start();
 
-   io.onImu([&](const sensor_msgs::msg::Imu& imu_msg, int64_t t_ns) {
+   io.onImu([&](const sensor_msgs::msg::Imu& imu_msg, double t_ns) {
       ImuData imu_data;
       toImuData(imu_data, imu_msg, t_ns);
-      imu_buffer.push(imu_data);
+      lio_pipe.pushImu(imu_data);
    });
-   io.onLidar([&](const sensor_msgs::msg::PointCloud2& cloud_msg, int64_t t_ns) {
-      lidar_pre_pipe.onPreprocess(
-        [](std::shared_ptr<sensor_msgs::msg::PointCloud2>msg_ptr, PointCloud& pc, const LioOptions& options) {
-           pc2ToPointCloudXYZIT(msg_ptr, pc, options.voxel_size, options.voxel_down_sample);
-        }
-      );
-      lidar_pre_pipe.onLidarMsg(cloud_msg, t_ns, lio_options);
+   io.onLidar([&](const sensor_msgs::msg::PointCloud2& cloud_msg, double t_ns) {
+      l_count++;
+      //std:: cout << "The"<<l_count<<"th lidar data is "<<t_ns<<std::endl;
+
+      lio_pipe.onLidarMsg(cloud_msg, t_ns);
    });
    if(!io.go()) {
       std::cerr<< "Failed rendering bag.\n";
    }
-   rclcpp::shutdown();
-   consumer.join();
+   //sleep(200);
+   lio_pipe.notifyEndOfBag();
    std::cout<<"cosumer joined!"<<std::endl;
-   lidar_pre_pipe.stop();
+   lio_pipe.stopDrain();
+   rclcpp::shutdown();
+   std::cout<<"lidar pipe stopped!"<<std::endl;
+
+   EXPECT_TRUE(true);
+}
+
+TEST(IO, TEST_KEY_FRMAES) {
+   //sleep(20);
+   const std::string ros_bag_path = "/media/chuchu/Extreme Pro/unordered_ros_bag";
+
+   RosIoOffline::IoOptions options;
+   options.bag_folder = ros_bag_path;
+   RosIoOffline io(options);
+   bool is_initial = false;
+   GPS gps;
+   size_t kf_idx  =0;
+   size_t lidar_cnt =0;
+
+   std::unordered_map<size_t, std::shared_ptr<KeyFrame>>key_frame_map;
+   std::map<double, GPSData> gps_data_map;
+   std::string dir = "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/output_temp/";
+
+   io.onImu([&](const sensor_msgs::msg::Imu& imu_msg, double t_ns) {
+   int a =5;
+   });
+   io.onLidar([&](const sensor_msgs::msg::PointCloud2& cloud_msg, double t_ns) {
+      lidar_cnt++;
+
+      //std:: cout << "lidar data is "<<t_ns<<std::endl;
+      auto msg_ptr = std::make_shared<sensor_msgs::msg::PointCloud2>(cloud_msg);
+      PointCloud pc;
+      pc2ToPointCloudXYZIT( msg_ptr, pc, 0.5, true);
+      std::shared_ptr<PointCloud> pc_ptr = std::make_shared<PointCloud>(pc);
+      //create a key frame shared_ptr
+      std::shared_ptr<KeyFrame> kf_ptr = std::make_shared<KeyFrame>(t_ns, kf_idx, SE3d(), pc_ptr);
+
+
+      //after lio, write out the point cloud to file
+      std::string cloud_path = dir + std::to_string(kf_idx) + ".pcd";
+      std::cout<<kf_ptr->id_<<std::endl;
+      //export the point cloiud
+      if (!writePointCloudToFile(cloud_path, pc_ptr)) {
+        std::cerr << "Failed to write point cloud: "<< cloud_path <<"\n";
+      }
+      kf_ptr->cloud_path_ = cloud_path;
+      kf_ptr->cloud_size_ = kf_ptr->cloud_ptr_->size();
+      kf_ptr->cloud_ptr_->clear();
+      key_frame_map.emplace(kf_idx, kf_ptr);
+      kf_idx++;
+   });
+   io.onGps(
+      [&](const sensor_msgs::msg::NavSatFix& msg, double bag_time_ns) {
+         //std::cout<< "gps time: "<<bag_time_ns<<std::endl;
+         double lat  = static_cast<double>(msg.latitude);
+         double lon  = static_cast<double>(msg.longitude);
+         double alt  = static_cast<double>(msg.altitude);
+
+
+         if(!is_initial) {
+           auto res= gps.InitialRTK(lat,lon);
+           ASSERT_TRUE(res);
+         }
+         GPSData gps_data;
+         gps_data.t_ = bag_time_ns;
+         gps_data.lat_ = lat;
+         gps_data.lon_ = lon;
+         gps_data.alt_ = alt;
+         gps.Convert2UTM(gps_data);
+         //std::cout<< std::setprecision(10)<<"x: "<<gps_data.x_<<"\n";
+         //std::cout<< std::setprecision(10)<<"y: "<<gps_data.y_<<"\n";
+         //std::cout<< std::setprecision(10)<<"z: "<<gps_data.z_<<"\n";
+         gps.GetPose(gps_data);
+         gps_data_map.emplace(bag_time_ns, gps_data);
+      }
+   );
+   if(!io.go()) {
+      std::cerr<< "Failed rendering bag.\n";
+   }
+   //sleep(200);
+   rclcpp::shutdown();
+   std::cout<< "There are "<< key_frame_map.size() << " keyframes in the bag.\n";
+
+   //get gps for kfs
+   for(auto it : key_frame_map) {
+      Interpolate_gps(it.second->time_, it.second, gps_data_map);
+   }
+   std::string output_path = "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/output_temp/kf_output.txt";
+   writeToFile(output_path, key_frame_map);
+
+   std::unordered_map <size_t, std::shared_ptr<KeyFrame>> out_kf_map;
+   loadKeyFrames(output_path, out_kf_map);
+
+   //verify the kfs load and write
+   ASSERT_EQ(out_kf_map.size(), key_frame_map.size());
+
+   for(auto it : key_frame_map) {
+      auto out_it = out_kf_map.find(it.first);
+      ASSERT_TRUE(out_it != out_kf_map.end());
+      auto out_kf = out_it->second;
+      auto in_kf = it.second;
+      SE3d dT = out_kf->rtk_pose_.inverse() * in_kf->rtk_pose_;
+      double rot_err = dT.so3().log().norm();
+      double trans_err = dT.translation().norm();
+
+      ASSERT_LT(rot_err, 1e-6) << "Rotation mismatch at key " << it.first;
+      ASSERT_LT(trans_err, 1e-6) << "Translation mismatch at key " << it.first;
+      std::cout<< it.first << "\n";
+      ASSERT_EQ(in_kf->cloud_size_, out_kf->cloud_size_);
+   }
+
    std::cout<<"lidar pipe stopped!"<<std::endl;
 
    EXPECT_TRUE(true);

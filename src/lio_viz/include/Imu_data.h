@@ -15,16 +15,16 @@
 
 
 struct ImuData {
-      int64_t t= 0.0;
-      Vec3f acc = Vec3f(0.0, 0.0, 0.0);
-      Vec3f gyro = Vec3f(0.0, 0.0, 0.0);
+      double t= 0.0;
+      Vec3d acc = Vec3d(0.0, 0.0, 0.0);
+      Vec3d gyro = Vec3d(0.0, 0.0, 0.0);
 };
 
-inline void toImuData(ImuData& out, const sensor_msgs::msg::Imu& msg, const int64_t t_ns) {
+inline void toImuData(ImuData& out, const sensor_msgs::msg::Imu& msg, const double t_ns) {
     // time
     out.t = t_ns;
 
-    std::cout<< "imu data t: " << t_ns << std::endl;
+    //std::cout<< "imu data t: " << t_ns << std::endl;
 
     // accel (linear_acceleration)
     out.acc(0) = msg.linear_acceleration.x;

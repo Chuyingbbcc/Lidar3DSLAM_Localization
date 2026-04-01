@@ -17,9 +17,9 @@ class RegistrationBase {
     public:
     virtual ~RegistrationBase() = default;
 
-    virtual void AddCloud(std::shared_ptr<const PointCloud> target){};
-    virtual void SetSourceCloud(std::shared_ptr<const PointCloud> source){};
-    virtual bool Align(SE3f& init_pose){return true;};
+    virtual void AddCloud(std::shared_ptr<PointCloud>& target){};
+    virtual void SetSourceCloud(std::shared_ptr<PointCloud>& source){};
+    virtual bool Align(SE3d & init_pose){return true;};
 };
 
 enum class NearbyType {
@@ -28,17 +28,17 @@ enum class NearbyType {
  };
 
 struct IncNDTOptions {
-   int max_iterations_ = 20;
-   float voxel_size_ = 1.0;
-   float inv_voxel_size_ = 1.0;
+   int max_iterations_ = 10;
+   double voxel_size_ = 4;
+   double inv_voxel_size_ = 1.0;
    int min_effective_pts_ = 10;
-   int min_pts_in_voxel_ = 5;
+   int min_pts_in_voxel_ = 3;
    int max_pts_in_voxel_ = 50;
 
-   float eps_ = 1e-3;
-   float res_outlier_threshold_ = 5.0;
+   double eps_ = 1e-3;
+   double res_outlier_threshold_ = 9.21;
 
-   size_t capacity_ = 100000;
+   size_t capacity_ = 700;
    NearbyType nearby_type_ = NearbyType::CENTER;
 
 };
@@ -49,14 +49,14 @@ public:
     IncNDT(const IncNDTOptions& opts);
     ~IncNDT() override = default;
 
-    bool Align(SE3f& init_pose) override;
-    void SetSourceCloud(std::shared_ptr<const PointCloud> source) override;
-    void AddCloud(std::shared_ptr<const PointCloud> target) override;
+    bool Align(SE3d & init_pose) override;
+    void SetSourceCloud(std::shared_ptr<PointCloud>& source) override;
+    void AddCloud(std::shared_ptr<PointCloud>& target) override;
 
   private:
     bool first_scan_processed = true;
     IncNDTOptions opt_;
-    std::shared_ptr<const PointCloud> source_ptr_;
+    std::shared_ptr<PointCloud> source_ptr_;
 
     //nearby keys
     std::vector<KeyType>nearby_grids_;
