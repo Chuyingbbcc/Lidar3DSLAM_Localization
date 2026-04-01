@@ -169,7 +169,7 @@ const char* fs_src =R"(
  }
  void main(){
    float t = v_intensity;
-   vec3 color =colormap(t);
+   vec3 color =vec3(1.0,1.0,1.0);
    FragColor = vec4(color, 1.0);
  }
 )";
@@ -291,7 +291,7 @@ bool OpenGLPointCloudNode::load_point_cloud(const std::string &path, std::vector
 
     // Typical Velodyne/KITTI: x,y,z,intensity -> 4 floats per point
     // But we also allow 3 floats/point (xyz only) as a fallback.
-    std::size_t fields_per_point = 0;
+    std::size_t fields_per_point = 3;
     if (num_floats % 5 == 0) {
         fields_per_point = 5;
     } else if (num_floats % 4 == 0) {

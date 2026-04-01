@@ -19,6 +19,7 @@
 #include <stdexcept>
 #include <cmath>
 #include <iostream>
+#include <fstream>
 
 
 #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -49,7 +50,7 @@ class PointCloud {
     //access
     Point& operator[] (std::size_t i){return pts_[i];}
     const Point& operator[] (std::size_t i) const {return pts_[i];}
-    int64_t get_time() const {
+    double get_time() const {
       return time_;
     }
     //iteration
@@ -62,7 +63,7 @@ class PointCloud {
     void clear() {pts_.clear();}
     void reserve(size_t n) {pts_.reserve(n);}
     void resize(size_t n) {pts_.resize(n);}
-    void setTime(const int64_t t) {time_ = t;}
+    void setTime(const double t) {time_ = t;}
 
     void push_back(const Point& pt) {pts_.push_back(pt);}
 
@@ -80,7 +81,7 @@ class PointCloud {
     }
     private:
     std::vector<Point> pts_;
-    int64_t time_;
+    double time_;
 };
 
 class CloudSlice {
@@ -156,87 +157,328 @@ struct PtrVoxelHash {
      return (size_t)h;
   }
 };
-
-inline bool pc2ToPointCloudXYZIT( const std::shared_ptr<sensor_msgs::msg::PointCloud2> msg_ptr,
+struct VoxelAccum {
+   double sx = 0.0, sy = 0.0, sz = 0.0;
+   double si = 0.0, st = 0.0;
+   int count = 0;
+};
+// inline bool pc2ToPointCloudXYZIT( const std::shared_ptr<sensor_msgs::msg::PointCloud2> msg_ptr,
+//     PointCloud& out,
+//     float voxel_size,
+//     bool down_sample,
+//     bool skip_nan = true){
+//     out.clear();
+//     if(msg_ptr->point_step ==0) return false;
+//
+//     const auto fmap =buildFieldMap(msg_ptr);
+//     auto itx = fmap.find("x");
+//     auto ity = fmap.find("y");
+//     auto itz = fmap.find("z");
+//     if (itx == fmap.end() || ity == fmap.end() || itz == fmap.end()) {
+//         return false;
+//     }
+//     const bool has_intensity = (fmap.find("intensity") != fmap.end());
+//     const bool has_t = (fmap.find("t") != fmap.end()) || (fmap.find("time") != fmap.end());
+//     const auto itI = fmap.find("intensity");
+//     const auto itT = fmap.find("t");
+//     const auto itTime = fmap.find("time");
+//
+//     const std::size_t N = static_cast<std::size_t>(msg_ptr->width) * static_cast<std::size_t>(msg_ptr->height);
+//     out.reserve(N);
+//
+//     const float inv = 1.0f / voxel_size;
+//     std::unordered_set<PtrVoxelKey, PtrVoxelHash>seen;
+//
+//     const std::uint8_t* base = msg_ptr->data.data();
+//     for (std::size_t i = 0; i < N; ++i) {
+//        const std::uint8_t* p = base + i*msg_ptr->point_step;
+//
+//        float x = readScalar<float>(p, itx->second.offset);
+//        float y = readScalar<float>(p, ity->second.offset);
+//        float z = readScalar<float>(p, itz->second.offset);
+//        if (skip_nan) {
+//           if (!(std::isfinite(x) && std::isfinite(y) && std::isfinite(z)))continue;
+//        }
+//
+//        PtrVoxelKey key{
+//         (int32_t)std::floor(x *inv),
+//            (int32_t)std::floor(y *inv),
+//            (int32_t)std::floor(z *inv),
+//        };
+//
+//        if(down_sample && !seen.insert(key).second)continue;
+//        if(z<-1 || x< -40 || x> 40 || y< -40 || y>40) {
+//          continue;
+//        }
+//
+//        float intensity = 0.f;
+//        if (has_intensity) {
+//          const auto& fi  = itI->second;
+//          switch (fi.datatype) {
+//             case sensor_msgs::msg::PointField::FLOAT32:
+//                intensity = readScalar<float>(p, fi.offset);
+//                break;
+//             case sensor_msgs::msg::PointField::UINT16:
+//                intensity = static_cast<float>(readScalar<std::uint16_t>(p, fi.offset));
+//                break;
+//             case sensor_msgs::msg::PointField::UINT8:
+//                intensity = static_cast<float>(readScalar<std::uint8_t>(p, fi.offset));
+//                break;
+//             default:
+//                // unknown type -> leave 0
+//                break;
+//          }
+//        }
+//        float t = 0.f;
+//        if (has_t) {
+//           const FieldInfo* ft  = nullptr;
+//           if (itT != fmap.end()) ft= &itT->second;
+//           else if (itTime != fmap.end()) ft = &itTime->second;
+//           if (ft) {
+//              if (ft->datatype == sensor_msgs::msg::PointField::FLOAT32) {
+//                 t = readScalar<float>(p, ft->offset);
+//              } else if (ft->datatype == sensor_msgs::msg::PointField::FLOAT64) {
+//                 t = static_cast<float>(readScalar<double>(p, ft->offset));
+//              }
+//           }
+//        }
+//        out.emplace_back(x,y,z,intensity,t);
+//     }
+//    //std::cout<<N<< " points read from msg. "<< out.size()<< " stored"<<std::endl;
+//    return true;
+// }
+inline bool pc2ToPointCloudXYZIT(
+    const std::shared_ptr<sensor_msgs::msg::PointCloud2> msg_ptr,
     PointCloud& out,
     float voxel_size,
     bool down_sample,
-    bool skip_nan = true){
+    bool skip_nan = true)
+{
     out.clear();
-    if(msg_ptr->point_step ==0) return false;
+    if (msg_ptr->point_step == 0) return false;
 
-    const auto fmap =buildFieldMap(msg_ptr);
+    const auto fmap = buildFieldMap(msg_ptr);
     auto itx = fmap.find("x");
     auto ity = fmap.find("y");
     auto itz = fmap.find("z");
     if (itx == fmap.end() || ity == fmap.end() || itz == fmap.end()) {
         return false;
     }
+
     const bool has_intensity = (fmap.find("intensity") != fmap.end());
     const bool has_t = (fmap.find("t") != fmap.end()) || (fmap.find("time") != fmap.end());
     const auto itI = fmap.find("intensity");
     const auto itT = fmap.find("t");
     const auto itTime = fmap.find("time");
 
-    const std::size_t N = static_cast<std::size_t>(msg_ptr->width) * static_cast<std::size_t>(msg_ptr->height);
-    out.reserve(N);
-
-    const float inv = 1.0f / voxel_size;
-    std::unordered_set<PtrVoxelKey, PtrVoxelHash>seen;
+    const std::size_t N =
+        static_cast<std::size_t>(msg_ptr->width) *
+        static_cast<std::size_t>(msg_ptr->height);
 
     const std::uint8_t* base = msg_ptr->data.data();
-    for (std::size_t i = 0; i < N; ++i) {
-       const std::uint8_t* p = base + i*msg_ptr->point_step;
 
-       float x = readScalar<float>(p, itx->second.offset);
-       float y = readScalar<float>(p, ity->second.offset);
-       float z = readScalar<float>(p, itz->second.offset);
-       if (skip_nan) {
-          if (!(std::isfinite(x) && std::isfinite(y) && std::isfinite(z)))continue;
-       }
+    if (!down_sample) {
+        out.reserve(N);
+        for (std::size_t i = 0; i < N; ++i) {
+            const std::uint8_t* p = base + i * msg_ptr->point_step;
 
-       PtrVoxelKey key{
-        (int32_t)std::floor(x *inv),
-           (int32_t)std::floor(y *inv),
-           (int32_t)std::floor(z *inv),
-       };
+            float x = readScalar<float>(p, itx->second.offset);
+            float y = readScalar<float>(p, ity->second.offset);
+            float z = readScalar<float>(p, itz->second.offset);
 
-       if(down_sample && !seen.insert(key).second)continue;
+            if (skip_nan && !(std::isfinite(x) && std::isfinite(y) && std::isfinite(z))) {
+                continue;
+            }
 
-       float intensity = 0.f;
-       if (has_intensity) {
-         const auto& fi  = itI->second;
-         switch (fi.datatype) {
-            case sensor_msgs::msg::PointField::FLOAT32:
-               intensity = readScalar<float>(p, fi.offset);
-               break;
-            case sensor_msgs::msg::PointField::UINT16:
-               intensity = static_cast<float>(readScalar<std::uint16_t>(p, fi.offset));
-               break;
-            case sensor_msgs::msg::PointField::UINT8:
-               intensity = static_cast<float>(readScalar<std::uint8_t>(p, fi.offset));
-               break;
-            default:
-               // unknown type -> leave 0
-               break;
-         }
-       }
-       float t = 0.f;
-       if (has_t) {
-          const FieldInfo* ft  = nullptr;
-          if (itT != fmap.end()) ft= &itT->second;
-          else if (itTime != fmap.end()) ft = &itTime->second;
-          if (ft) {
-             if (ft->datatype == sensor_msgs::msg::PointField::FLOAT32) {
-                t = readScalar<float>(p, ft->offset);
-             } else if (ft->datatype == sensor_msgs::msg::PointField::FLOAT64) {
-                t = static_cast<float>(readScalar<double>(p, ft->offset));
-             }
-          }
-       }
-       out.emplace_back(x,y,z,intensity,t);
+            if (z < -1 || x < -40 || x > 40 || y < -40 || y > 40 || z>5) {
+                continue;
+            }
+
+            float intensity = 0.f;
+            if (has_intensity) {
+                const auto& fi = itI->second;
+                switch (fi.datatype) {
+                    case sensor_msgs::msg::PointField::FLOAT32:
+                        intensity = readScalar<float>(p, fi.offset);
+                        break;
+                    case sensor_msgs::msg::PointField::UINT16:
+                        intensity = static_cast<float>(readScalar<std::uint16_t>(p, fi.offset));
+                        break;
+                    case sensor_msgs::msg::PointField::UINT8:
+                        intensity = static_cast<float>(readScalar<std::uint8_t>(p, fi.offset));
+                        break;
+                    default:
+                        break;
+                }
+            }
+
+            float t = 0.f;
+            if (has_t) {
+                const FieldInfo* ft = nullptr;
+                if (itT != fmap.end()) ft = &itT->second;
+                else if (itTime != fmap.end()) ft = &itTime->second;
+
+                if (ft) {
+                    if (ft->datatype == sensor_msgs::msg::PointField::FLOAT32) {
+                        t = readScalar<float>(p, ft->offset);
+                    } else if (ft->datatype == sensor_msgs::msg::PointField::FLOAT64) {
+                        t = static_cast<float>(readScalar<double>(p, ft->offset));
+                    }
+                }
+            }
+
+            out.emplace_back(x, y, z, intensity, t);
+        }
+        return true;
     }
-   std::cout<<N<< " points read from msg. "<< out.size()<< " stored"<<std::endl;
+
+    const float inv = 1.0f / voxel_size;
+    std::unordered_map<PtrVoxelKey, VoxelAccum, PtrVoxelHash> voxels;
+    voxels.reserve(N / 4 + 1);
+
+    for (std::size_t i = 0; i < N; ++i) {
+        const std::uint8_t* p = base + i * msg_ptr->point_step;
+
+        float x = readScalar<float>(p, itx->second.offset);
+        float y = readScalar<float>(p, ity->second.offset);
+        float z = readScalar<float>(p, itz->second.offset);
+
+        if (skip_nan && !(std::isfinite(x) && std::isfinite(y) && std::isfinite(z))) {
+            continue;
+        }
+
+        if (z < -1 || x < -40 || x > 40 || y < -40 || y > 40 || z>5) {
+            continue;
+        }
+
+        float intensity = 0.f;
+        if (has_intensity) {
+            const auto& fi = itI->second;
+            switch (fi.datatype) {
+                case sensor_msgs::msg::PointField::FLOAT32:
+                    intensity = readScalar<float>(p, fi.offset);
+                    break;
+                case sensor_msgs::msg::PointField::UINT16:
+                    intensity = static_cast<float>(readScalar<std::uint16_t>(p, fi.offset));
+                    break;
+                case sensor_msgs::msg::PointField::UINT8:
+                    intensity = static_cast<float>(readScalar<std::uint8_t>(p, fi.offset));
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        float t = 0.f;
+        if (has_t) {
+            const FieldInfo* ft = nullptr;
+            if (itT != fmap.end()) ft = &itT->second;
+            else if (itTime != fmap.end()) ft = &itTime->second;
+
+            if (ft) {
+                if (ft->datatype == sensor_msgs::msg::PointField::FLOAT32) {
+                    t = readScalar<float>(p, ft->offset);
+                } else if (ft->datatype == sensor_msgs::msg::PointField::FLOAT64) {
+                    t = static_cast<float>(readScalar<double>(p, ft->offset));
+                }
+            }
+        }
+
+        PtrVoxelKey key{
+            static_cast<int32_t>(std::floor(x * inv)),
+            static_cast<int32_t>(std::floor(y * inv)),
+            static_cast<int32_t>(std::floor(z * inv))
+        };
+
+        VoxelAccum& a = voxels[key];
+        a.sx += x;
+        a.sy += y;
+        a.sz += z;
+        a.si += intensity;
+        a.st += t;
+        a.count += 1;
+    }
+
+    out.reserve(voxels.size());
+    for (const auto& kv : voxels) {
+        const VoxelAccum& a = kv.second;
+        if (a.count <= 0) continue;
+
+        const float inv_count = 1.0f / static_cast<float>(a.count);
+        out.emplace_back(
+            static_cast<float>(a.sx * inv_count),
+            static_cast<float>(a.sy * inv_count),
+            static_cast<float>(a.sz * inv_count),
+            static_cast<float>(a.si * inv_count),
+            static_cast<float>(a.st * inv_count)
+        );
+    }
+
+    return true;
+}
+inline bool loadPointCloudFromFile(std::string filename, std::shared_ptr<PointCloud>pointPtr) {
+   pointPtr->clear();
+   std::fstream is(filename);
+   if(!is) {
+         std::cerr << "Failed to open file\n";
+         return false;
+   }
+   //get file size in bytes
+   is.seekg(0, std::ios::end);
+   std::streampos nbytes = is.tellg();
+   if(nbytes <=0) {
+      std::cerr << "Empty file\n";
+      return false;
+   }
+   is.seekg(0, std::ios::beg);
+   std::size_t total_bytes  = static_cast<std::size_t>(nbytes);
+   std::size_t num_floats   = total_bytes / sizeof(float);
+   std::size_t fields_per_point = 3;
+   // if (num_floats % 5 == 0) {
+   //    fields_per_point = 5;
+   // } else if (num_floats % 4 == 0) {
+   //    fields_per_point = 4;
+   // }
+
+   //std::cout<<fields_per_point<<std::endl;
+   std::size_t num_points = num_floats / fields_per_point;
+   std::vector<float> buffer(num_floats);
+   is.read(reinterpret_cast<char*>(buffer.data()), total_bytes);
+
+   if (!is.good()) {
+      std::cout <<  "Failed to read binary data" << std::endl;
+      return false;
+   }
+   for (std::size_t i = 0; i < num_points; ++i) {
+      const float x = buffer[i * fields_per_point + 0];
+      const float y = buffer[i * fields_per_point + 1];
+      const float z = buffer[i * fields_per_point + 2];
+      pointPtr->emplace_back(x,y,z);
+   }
+   return true;
+}
+
+inline bool writePointCloudToFile(const std::string& out_path, std::shared_ptr<PointCloud>cloud_ptr) {
+   //TODO: implement later
+   //std::cout<<"SaveSubMap"<<std::endl;
+   std::ofstream ofs(out_path.c_str(), std::ios::binary|std::ios::app);
+   if(!ofs) {
+      std::cerr<< "Can't open cloud file" << std::endl;
+      return false;
+   }
+   //write in only one cloud file
+   uint64_t n = cloud_ptr->size();
+   for(int i=0; i< n; i++) {
+      const auto& p = (*cloud_ptr)[i];
+      ofs.write(reinterpret_cast<const char*>(&p.x), sizeof(float));
+      ofs.write(reinterpret_cast<const char*>(&p.y), sizeof(float));
+      ofs.write(reinterpret_cast<const char*>(&p.z), sizeof(float));
+      //ofs.write(reinterpret_cast<const char*>(&p.intensity), sizeof(float));
+   }
+   uint64_t total_size = n*sizeof(float)*3;
+   //std::cout<< "Written "<< total_size<< " of " <<n<<"points"<<std::endl;
+   //open the file handler
+   //write binary to the file
    return true;
 }
 #endif //POINTCLOUDUTILS_H

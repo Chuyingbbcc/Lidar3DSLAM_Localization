@@ -7,45 +7,45 @@
 #include "../include/DataType.h"
 
 namespace  math {
-    void computeMeanAndCov(const std::vector<Vec3f>& pts, Vec3f& out_mu, Mat3f& out_sig) {
-        float min_var = 1e-4f;
+    void computeMeanAndCov(const std::vector<Vec3d>& pts, Vec3d& out_mu, Mat3d& out_sig) {
+        double min_var = 1e-4f;
         out_mu.setZero();
         out_sig.setZero();
         const int n = pts.size();
 
         if(n == 0) return;
         for(const auto& pt : pts) out_mu += pt;
-        out_mu /= static_cast<float>(n);
+        out_mu /= static_cast<double>(n);
 
         if(n==1) {
-            out_sig = min_var* Mat3f::Identity();
+            out_sig = min_var* Mat3d::Identity();
             return;
         }
 
-        Mat3f S = Mat3f::Zero();
+        Mat3d S = Mat3d::Zero();
         for(const auto& pt : pts) {
-           const Vec3f d = pt - out_mu;
+           const Vec3d d = pt - out_mu;
            S.noalias() += d * d.transpose();
         }
         //Prevents floating-point asymmetry → stable eigensolvers
-        out_sig = S / static_cast<float>(n);
+        out_sig = S / static_cast<double>(n);
         out_sig = 0.5f * (out_sig + out_sig.transpose());
         //“No voxel is allowed to be infinitely confident in any direction.”
         out_sig.diagonal().array() += min_var;
     }
 
-    void updateMeanAndCov(const std::vector<Vec3f>&pts, const int old_size, const Vec3f& old_mu ,const Mat3f& old_sig, Vec3f& out_mu, Mat3f& out_sig) {
-        const float n0 = static_cast<float>(old_size);
-        const float n1 = static_cast<float>(pts.size());
-        const float n  = n0 + n1;
+    void updateMeanAndCov(const std::vector<Vec3d>&pts, const int old_size, const Vec3d& old_mu ,const Mat3d& old_sig, Vec3d& out_mu, Mat3d& out_sig) {
+        const double n0 = static_cast<double>(old_size);
+        const double n1 = static_cast<double>(pts.size());
+        const double n  = n0 + n1;
 
         out_mu.setZero();
         out_sig.setZero();
 
         if (n <= 0.f) return;
 
-        Vec3f in_mu = Vec3f::Zero();
-        Mat3f in_sig = Mat3f::Zero();
+        Vec3d in_mu = Vec3d::Zero();
+        Mat3d in_sig = Mat3d::Zero();
         if (!pts.empty()) {
             computeMeanAndCov(pts, in_mu, in_sig); // MUST be MLE (/N) for NDT
         }
@@ -55,11 +55,11 @@ namespace  math {
         else {
             out_mu = (n0 * old_mu + n1 * in_mu) / n;
 
-            const Vec3f d0 = old_mu - out_mu;
-            const Vec3f d1 = in_mu  - out_mu;
+            const Vec3d d0 = old_mu - out_mu;
+            const Vec3d d1 = in_mu  - out_mu;
 
-            Mat3f old_sig_change = old_sig + d0 * d0.transpose();
-            Mat3f in_sig_change  = in_sig  + d1 * d1.transpose();
+            Mat3d old_sig_change = old_sig + d0 * d0.transpose();
+            Mat3d in_sig_change  = in_sig  + d1 * d1.transpose();
 
             out_sig = (n0 * old_sig_change + n1 * in_sig_change) / n;
         }

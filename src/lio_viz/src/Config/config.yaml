@@ -1,0 +1,36 @@
+frontend:
+  ros_bag_path: "/media/chuchu/Extreme Pro/unordered_ros_bag"
+  #lio_options
+  out_cloud_dir: "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/output_temp"
+  out_kf_info_path: "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/output_temp/kf_output.txt"
+  num_threads: 3
+  slack_sec : 0.01
+  down_sample_ratio: 0.7
+  #io_options
+  print_topics: true
+  down_sample: true
+  #lo_options
+  kf_distance: 0.5
+  #ndt_options
+  max_iterations: 20
+  voxel_size: 3.0
+  inv_voxel_size: 1.0
+  min_effective_pts: 10
+  min_pts_in_voxel: 5
+  max_pts_in_voxel: 50
+  eps : 1e-3
+  res_outlier_threshold: 9.21
+  capacity: 700
+  nearby_type: "center"
+  #eskf options
+  imu_dt: 0.01
+  gyro_var: 1e-5
+  acc_var: 1e-2
+  bias_gyro_var: 1e-6
+  bias_acc_var: 1e-4
+  pos_noise: 0.1
+  height_noise: 0.1
+  double ang_noise: 0.0174533;
+
+
+
