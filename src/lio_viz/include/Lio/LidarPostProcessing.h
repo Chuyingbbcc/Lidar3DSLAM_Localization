@@ -26,6 +26,7 @@ public:
 
     bool waitPopOrdered(CloudPtr& out);   // consumer thread: ordered scans
     void waitUntilDone();
+    void waitIfReadyTooLarge();
 
     void stop();
     void closeInput();
@@ -65,11 +66,15 @@ private:
     std::condition_variable cv_ready_;
     std::deque<CloudPtr> ready_;
 
+    //
+    std::condition_variable cv_backpressure_;
+    size_t high_watermark_ = 100;
+    size_t low_watermark_ = 60;
+
     bool input_closed_ = false;
     bool done_ =false;
 
     std::thread commit_thread_;
 };
-
 
 

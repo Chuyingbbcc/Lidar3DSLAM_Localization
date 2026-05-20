@@ -16,6 +16,7 @@
 #include "Align.h"
 #include "ESKF.h"
 #include "GPS.h"
+#include "KeyFrame.h"
 
 
 
@@ -39,14 +40,20 @@ class Frontend {
     bool hasKfCloudPath() const;
     std::string takeNextPath();
 
+    void publishKeyframe(const std::shared_ptr<KeyFrame>kf_ptr);
+    std::shared_ptr<KeyFrame> takeNextKeyFrame();
+
+    std::string getOutKfPath();
+
     private:
     bool loadFrontendConfig();
     std::string init_path_ = "";
     bool publish_viewer_ = true;
+    bool output_kf_ =true;
     FrontendOptions fe_options_;
     GPS gps_;
     std::map<double, GPSData>gps_data_map_;
-    std::unordered_map<size_t, std::shared_ptr<KeyFrame>>key_frame_map_;
+    std::map<size_t, std::shared_ptr<KeyFrame>>key_frame_map_;
     std::unique_ptr<RosIoOffline> io_ptr_;
     std::unique_ptr<ImuBuffer> imu_buffer_ptr_;
     std::unique_ptr<LioPipe> lio_pipe_ptr_;
@@ -55,6 +62,10 @@ class Frontend {
     mutable std::mutex kf_mutex_;
     std::queue<std::string>path_queue_;
     bool has_new_kf_path_ = false;
+
+
+    KeyFrameQueue kf_q_;
+    bool has_new_kf = false;
 
 
 };

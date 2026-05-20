@@ -110,6 +110,9 @@ bool RosIoOffline::go() {
   size_t total = 0, pc2_n = 0, imu_n = 0, odom_n = 0, tf_n = 0, gps_n =0;
 
   while (reader.has_next()) {
+    if (wait_cb_) {
+      wait_cb_();
+    }
     auto bag_msg = reader.read_next();
     ++total;
      // if(pc2_n >20) {

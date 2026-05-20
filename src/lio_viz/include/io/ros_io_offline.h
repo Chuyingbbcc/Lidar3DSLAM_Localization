@@ -28,6 +28,7 @@ public:
     using ImuCb = std::function<void(const sensor_msgs::msg::Imu&, double bag_time_ns )>;
     using TfCb = std::function<void(const tf2_msgs::msg::TFMessage&, double bag_time_ns)>;
     using GpsCb =std::function<void(const sensor_msgs::msg::NavSatFix&, double bag_time_ns)>;
+    using WaitCb = std::function<void()>;
     explicit RosIoOffline(IoOptions io_options);
     ~RosIoOffline() = default;
 
@@ -35,6 +36,7 @@ public:
     void onImu(ImuCb cb){imu_cb_ = std::move(cb);}
     void onTf(TfCb cb){tf_cb_ = std::move(cb);}
     void onGps(GpsCb cb){gps_cb_ = std::move(cb);}
+    void onWait(WaitCb cb){wait_cb_ = std::move(cb);}
 
     bool go();
 
@@ -44,6 +46,7 @@ private:
     ImuCb imu_cb_;
     TfCb tf_cb_;
     GpsCb gps_cb_;
+    WaitCb wait_cb_;
     double last_lidar_time_{0.0};
     double last_imu_time_{0.0};
     double last_tf_time_{0.0};

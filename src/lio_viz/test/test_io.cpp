@@ -257,7 +257,7 @@ TEST(IO, TEST_KEY_FRMAES) {
    size_t kf_idx  =0;
    size_t lidar_cnt =0;
 
-   std::unordered_map<size_t, std::shared_ptr<KeyFrame>>key_frame_map;
+   std::map<size_t, std::shared_ptr<KeyFrame>>key_frame_map;
    std::map<double, GPSData> gps_data_map;
    std::string dir = "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/output_temp/";
 
@@ -328,7 +328,7 @@ TEST(IO, TEST_KEY_FRMAES) {
    std::string output_path = "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/output_temp/kf_output.txt";
    writeToFile(output_path, key_frame_map);
 
-   std::unordered_map <size_t, std::shared_ptr<KeyFrame>> out_kf_map;
+   std::map <size_t, std::shared_ptr<KeyFrame>> out_kf_map;
    loadKeyFrames(output_path, out_kf_map);
 
    //verify the kfs load and write

@@ -57,7 +57,6 @@ static GLuint link_program(GLuint vs, GLuint fs, const rclcpp::Logger &logger) {
 OpenGLPointCloudNode::OpenGLPointCloudNode()
     : rclcpp::Node("opengl_pointcloud_node"),
       window_(nullptr),
-      have_points_(false),
       zoom_(5.0f)
 {
     sub_ = this->create_subscription<std_msgs::msg::String>(
@@ -65,19 +64,42 @@ OpenGLPointCloudNode::OpenGLPointCloudNode()
         10,
         std::bind(&OpenGLPointCloudNode::on_pcd_path, this, std::placeholders::_1)
     );
+    frame_sub_ = this->create_subscription<lio_msgs::msg::FrameData>(
+     "frame_data",
+     100,
+     std::bind(&OpenGLPointCloudNode::on_key_frame_callback, this, std::placeholders::_1));
     RCLCPP_INFO(this->get_logger(), "Visualization node started. Waiting for pcd_path messages...");
+
+    //Todo: hardcode now, replace later with yaml setting file
+    layer1_.draw_map_ = true;
+    layer1_.draw_route_ = true;
+    layer1_.route_pose_type_ = PoseType::LIDAR_NEU;
+    layer1_.map_pose_type_ = PoseType::LIDAR_NEU;
+
+    layer2_.draw_map_ = false;
+    layer2_.draw_route_ = false;
+    layer2_.route_pose_type_ = PoseType::RTK;
+    layer2_.map_pose_type_ = PoseType::LIDAR_NEU;
 }
 
 OpenGLPointCloudNode::~OpenGLPointCloudNode() {
-  if(vbo_){
-  glDeleteBuffers(1, &vbo_);
-  }
-  if(vao_){
-   glDeleteVertexArrays(1, &vao_);
-  }
+    if (vbo_1_) glDeleteBuffers(1, &vbo_1_);
+    if (vbo_2_) glDeleteBuffers(1, &vbo_2_);
+    if (vao_1_) glDeleteVertexArrays(1, &vao_1_);
+    if (vao_2_) glDeleteVertexArrays(1, &vao_2_);
+
+    if (route_vbo_1_) glDeleteBuffers(1, &route_vbo_1_);
+    if (route_vbo_2_) glDeleteBuffers(1, &route_vbo_2_);
+    if (route_vao_1_) glDeleteVertexArrays(1, &route_vao_1_);
+    if (route_vao_2_) glDeleteVertexArrays(1, &route_vao_2_);
+
   if(shader_program_){
-    glDeleteShader(shader_program_);
+    glDeleteProgram(shader_program_);
   }
+    if (route_shader_program_) {
+        glDeleteProgram(route_shader_program_);
+    }
+
   if(window_){
     glfwDestroyWindow(window_);
     glfwTerminate();
@@ -131,7 +153,8 @@ bool OpenGLPointCloudNode::init_window() {
 }
 
 bool OpenGLPointCloudNode::init_gl_resources() {
- const char* vs_src = R"(
+/*-----------------------Points Shader--------------------*/
+    const char* vs_src = R"(
   #version 330 core
   layout (location = 0) in vec3 a_position;
   layout (location = 1) in float a_intensity;
@@ -149,28 +172,10 @@ const char* fs_src =R"(
  #version 330 core
 
  in float v_intensity;
+ uniform vec3 u_color
  out vec4 FragColor;
-
- vec3 colormap(float t){
-  t= clamp(t, 0.0, 1.0);
-  if (t < 0.33) {
-    // dark blue -> cyan
-    float u = t / 0.33;
-    return mix(vec3(0.0, 0.0, 0.3), vec3(0.0, 1.0, 1.0), u);
-  } else if (t < 0.66) {
-    // cyan -> yellow
-    float u = (t - 0.33) / 0.33;
-    return mix(vec3(0.0, 1.0, 1.0), vec3(1.0, 1.0, 0.0), u);
-  } else {
-    // yellow -> white
-    float u = (t - 0.66) / 0.34;
-    return mix(vec3(1.0, 1.0, 0.0), vec3(1.0, 1.0, 1.0), u);
-  }
- }
  void main(){
-   float t = v_intensity;
-   vec3 color =vec3(1.0,1.0,1.0);
-   FragColor = vec4(color, 1.0);
+   FragColor = vec4(u_color, 1.0);
  }
 )";
 
@@ -191,25 +196,359 @@ if(!fs){
 shader_program_ = link_program(vs, fs, logger);
 glDeleteShader(vs);
 glDeleteShader(fs);
-if(!shader_program_){
-return false;
+if(!shader_program_) {
+    return false;
 }
 
-//setup vbo & vao
-glGenVertexArrays(1, &vao_);
-glGenBuffers(1, &vbo_);
-if (!vao_ || !vbo_) {
-        RCLCPP_ERROR(logger, "Failed to create VAO/VBO");
+/*-----------------------Route Shader--------------------*/
+    const char* route_vs_src = R"(#version 330 core
+
+layout(location = 0) in vec3 a_position;
+
+uniform mat4 u_mvp;
+
+void main() {
+    gl_Position = u_mvp * vec4(a_position, 1.0);
+})";
+
+const char* route_fs_src = R"(
+#version 330 core
+out vec4 FragColor;
+
+uniform vec3 u_color;
+
+void main() {
+    FragColor = vec4(u_color, 1.0);
+}
+)";
+    //commpile shader
+    GLuint route_vs = compile_shader(GL_VERTEX_SHADER, route_vs_src, "r_vertex", logger);
+    if(!route_vs){
         return false;
+    }
+    GLuint route_fs = compile_shader(GL_FRAGMENT_SHADER, route_fs_src, "r_fragment", logger);
+    if(!route_fs){
+        glDeleteShader(route_vs);
+        return false;
+    }
+
+    //link shader progamname
+    route_shader_program_ = link_program(route_vs, route_fs, logger);
+    glDeleteShader(route_vs);
+    glDeleteShader(route_fs);
+    if(!route_shader_program_) {
+        return false;
+    }
+
+//-----------------setup points vbo & vao---------------------------//
+setupPointBuffers(vao_1_, vbo_1_);
+setupPointBuffers(vao_2_, vbo_2_);
+
+//------------------------------setup route vbo & vao-------------------------------//
+setupRouteBuffers(route_vao_1_, route_vbo_1_);
+setupRouteBuffers(route_vao_2_, route_vbo_2_);
+
+vbo_ready_1_ = false;
+vbo_ready_2_ = false;
+
+route_vbo_ready_1_ = false;
+route_vbo_ready_2_ = false;
+
+num_points_gpu_1_ = 0;
+num_points_gpu_2_ = 0;
+
+num_route_points_1_ = 0;
+num_route_points_2_ = 0;
+
+return true;
 }
-glBindVertexArray(vao_);
-glBindBuffer(GL_ARRAY_BUFFER, vbo_);
 
-//configure attribute layout
-glEnableVertexAttribArray(0);
-glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(PointVertex), (void*)0);
+void OpenGLPointCloudNode::upload_points_to_gpu(const std::vector<PointVertex>& pts,
+    GLuint vbo,
+    bool& ready,
+    size_t& count){
 
-glEnableVertexAttribArray(1);
+  if(!vbo)return;
+
+  //bind ptr data
+  glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, pts.size() * sizeof(PointVertex), nullptr, GL_DYNAMIC_DRAW);
+
+    glBufferSubData(GL_ARRAY_BUFFER, 0, pts.size() * sizeof(PointVertex), pts.data());
+  glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+  count = pts.size();
+  ready = (count > 0);
+
+  RCLCPP_INFO(this->get_logger(), "Uploaded %zu points to GPU", count);
+}
+
+void OpenGLPointCloudNode::upload_route_to_gpu(const std::vector<glm::vec3>&route_pts, GLuint route_vbo, bool& ready, size_t& count) {
+    glBindBuffer(GL_ARRAY_BUFFER, route_vbo);
+    glBufferData(GL_ARRAY_BUFFER,
+                 route_pts.size() * sizeof(glm::vec3),
+                 route_pts.data(),
+                 GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    count = route_pts.size();
+    ready= (count > 0);
+}
+
+void OpenGLPointCloudNode::draw_points_layer(const glm::mat4 &mvp, GLuint vao, bool vbo_ready, size_t num_points, const glm::vec3& color) {
+    if (!vbo_ready || num_points ==0) {
+        return;
+    }
+    glUseProgram (shader_program_);
+
+    //set mvp
+    GLuint loc_mvp  = glGetUniformLocation(shader_program_, "u_mvp");
+    glUniformMatrix4fv(loc_mvp, 1, GL_FALSE, glm::value_ptr(mvp));
+
+    GLint loc_color = glGetUniformLocation(shader_program_, "u_color");
+    glUniform3f(
+        loc_color,
+        color.x,
+        color.y,
+        color.z);
+
+    glBindVertexArray(vao);
+    glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(num_points));
+    glBindVertexArray(0);
+    glUseProgram(0);
+}
+
+void OpenGLPointCloudNode::draw_route_layer(const glm::mat4& mvp, GLuint vao, bool vbo_ready, size_t num_points_route, const glm::vec3& color) {
+    if (!vbo_ready || num_points_route == 0) {
+        return;
+    }
+    glUseProgram(route_shader_program_);
+    // MVP
+    GLint loc_mvp = glGetUniformLocation(route_shader_program_, "u_mvp");
+    glUniformMatrix4fv(loc_mvp, 1, GL_FALSE, glm::value_ptr(mvp));
+
+    GLint loc_color = glGetUniformLocation(route_shader_program_, "u_color");
+    glUniform3f(loc_color, color.x, color.y, color.z);
+
+    glBindVertexArray(vao);
+    glDrawArrays(GL_LINE_STRIP, 0, static_cast<GLsizei>(num_points_route));
+    glBindVertexArray(0);
+    glUseProgram(0);
+}
+
+void OpenGLPointCloudNode::on_pcd_path(const std_msgs::msg::String::SharedPtr msg) {
+    std::lock_guard<std::mutex>lock(mutex_);
+    std::cout<<"vis node recive: " << msg->data<<std::endl;
+    if (msg->data != " ") {
+        pending_paths_.push(msg->data);
+    }
+}
+
+void OpenGLPointCloudNode::on_key_frame_callback(const lio_msgs::msg::FrameData::SharedPtr msg) {
+   PendingFrame pf;
+   pf.frame_id_ = msg->frame_id;
+   pf.cloud_path_ = msg->cloud_path;
+   pf.lidar_pose_ = poseMsgToGlm(msg->lidar_pose);
+   pf.rtk_pose_ = poseMsgToGlm(msg->rtk_pose);
+   pf.lidar_pose_neu_ = poseMsgToGlm(msg->lidar_pose_neu);
+
+   pf.has_lidar_pose_ = msg->has_lidar_pose;
+   pf.has_rtk_pose_ = msg->has_rtk_pose;
+   pf.has_lidar_pose_neu_ = msg->has_lidar_pose_neu;
+
+   std::lock_guard<std::mutex>lock(pending_mutex_);
+   pending_frames_.push_back(std::move(pf));
+}
+
+void OpenGLPointCloudNode::consume_pending_frames() {
+  std::deque<PendingFrame> local;
+  {
+     std::lock_guard<std::mutex> lock(pending_mutex_);
+     local.swap(pending_frames_);
+  }
+  for(auto& pf :  local) {
+    std::vector<PointVertex>local_points;
+    if (layer1_.draw_map_ || layer2_.draw_map_) {
+       if (!load_point_cloud_local(pf.cloud_path_, local_points)) {
+           continue;
+       }
+    }
+    append_frame_to_layer(pf, local_points, layer1_, map_points_1_, route_points_1_);
+    append_frame_to_layer(pf, local_points, layer2_, map_points_2_, route_points_2_);
+      if (layer1_.draw_map_) {
+          gpu_dirty_1_ = true;
+      }
+
+      if (layer2_.draw_map_) {
+          gpu_dirty_2_ = true;
+      }
+      if (layer1_.draw_route_) {
+          route_gpu_dirty_1_ = true;
+      }
+
+      if (layer2_.draw_route_) {
+          route_gpu_dirty_2_ = true;
+      }
+    auto_fit_pending_ = true;
+  }
+}
+
+void OpenGLPointCloudNode::append_frame_to_layer(const PendingFrame &pf, const std::vector<PointVertex> &local_points,
+    const RenderLayerConfig &config, std::vector<PointVertex> &map_points, std::vector<glm::vec3> &route_points) {
+    if (config.draw_map_) {
+       //convert local points to wc
+       glm::mat4 T_map;
+       if(selectPose(pf, config.map_pose_type_, T_map)) {
+           for (const auto& p : local_points) {
+               glm::vec4 q = T_map * glm::vec4(p.p_[0], p.p_[1], p.p_[2], 1.0f);
+               PointVertex wp =p;
+               wp.p_[0] = q.x;
+               wp.p_[1] = q.y;
+               wp.p_[2] = q.z;
+
+               map_points.push_back(wp);
+               update_map_bounds(wp);
+           }
+       }
+    }
+    if (config.draw_route_) {
+        glm::mat4 T_route;
+        if (selectPose(pf, config.route_pose_type_, T_route)) {
+            glm::vec3 route_p = getTranslation(T_route);
+            if (route_points.empty()|| glm::length(route_points.back()-route_p)> 0.5f) {
+              route_points.push_back(route_p);
+            }
+        }
+    }
+}
+
+bool OpenGLPointCloudNode::load_point_cloud_local(const std::string &path, std::vector<PointVertex> &out_points) {
+    out_points.clear();
+
+    std::ifstream fin(path, std::ios::binary);
+    if (!fin.is_open()) {
+        RCLCPP_ERROR(this->get_logger(),
+                     "Cannot open binary file: %s",
+                     path.c_str());
+        return false;
+    }
+    fin.seekg(0, std::ios::end);
+    std::streampos nbytes = fin.tellg();
+    if (nbytes <= 0) {
+        RCLCPP_ERROR(this->get_logger(),
+                     "Empty or invalid file: %s",
+                     path.c_str());
+        return false;
+    }
+    fin.seekg(0, std::ios::beg);
+
+    const std::size_t total_bytes =
+       static_cast<std::size_t>(nbytes);
+
+    const std::size_t num_floats =
+        total_bytes / sizeof(float);
+
+    const std::size_t fields_per_point = 3;
+
+    if (num_floats % fields_per_point != 0) {
+        RCLCPP_WARN(this->get_logger(),
+                    "File size is not perfectly divisible by xyz float layout: %s",
+                    path.c_str());
+    }
+
+    const size_t num_points = num_floats / fields_per_point;
+    if (num_points == 0) {
+        RCLCPP_ERROR(this->get_logger(),
+                     "No points in file: %s",
+                     path.c_str());
+        return false;
+    }
+
+    std::vector<float>buffer(num_floats);
+    fin.read(reinterpret_cast<char*>(buffer.data()), total_bytes);
+    if (!fin.good()) {
+        RCLCPP_ERROR(this->get_logger(),
+                     "Failed to read binary data from %s",
+                     path.c_str());
+        return false;
+    }
+
+    out_points.reserve(num_points);
+
+    for (std::size_t i = 0; i < num_points; ++i) {
+        PointVertex p;
+
+        p.p_[0] = buffer[i * fields_per_point + 0];
+        p.p_[1] = buffer[i * fields_per_point + 1];
+        p.p_[2] = buffer[i * fields_per_point + 2];
+
+        // For now use z as intensity.
+        // Later, if your file becomes x y z intensity, change fields_per_point to 4.
+        p.intensity_ = p.p_[2];
+
+        out_points.push_back(p);
+    }
+
+    return true;
+}
+
+bool OpenGLPointCloudNode::selectPose(const PendingFrame &pf, PoseType pose, glm::mat4 &T) const {
+switch (pose) {
+    case PoseType::LIDAR:
+    {
+        if (!pf.has_lidar_pose_) {
+            return false;
+        }
+
+        T = pf.lidar_pose_;
+        return true;
+    }
+
+    case PoseType::RTK:
+    {
+        if (!pf.has_rtk_pose_) {
+            return false;
+        }
+
+        T = pf.rtk_pose_;
+        return true;
+    }
+
+    case PoseType::LIDAR_NEU:
+    {
+        if (!pf.has_lidar_pose_neu_) {
+            return false;
+        }
+
+        T = pf.lidar_pose_neu_;
+        return true;
+    }
+}
+    return false;
+}
+
+glm::vec3 OpenGLPointCloudNode::getTranslation(const glm::mat4 &T) const {
+    return glm::vec3(
+       T[3][0],
+       T[3][1],
+       T[3][2]
+   );
+}
+
+bool OpenGLPointCloudNode::setupPointBuffers(GLuint &vao, GLuint &vbo) {
+    glGenVertexArrays(1, &vao);
+    glGenBuffers(1, &vbo);
+    if (!vao || !vbo) {
+        RCLCPP_ERROR(this->get_logger(), "Failed to create VAO/VBO");
+        return false;
+    }
+    glBindVertexArray(vao);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+
+    //configure attribute layout
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(PointVertex), (void*)0);
+
+    glEnableVertexAttribArray(1);
     glVertexAttribPointer(
       1,
       1,
@@ -218,57 +557,46 @@ glEnableVertexAttribArray(1);
       sizeof(PointVertex),
       (void*)(3 * sizeof(float)) // offset
     );
-
-//unbind
-    /*👍 We unbind because OpenGL is a global state machine:
-
-    Leaving VAO/VBO bound makes them vulnerable to accidental modification.
-
-    Unbinding ensures no later code changes attribute state unintentionally.*/
-
-glBindBuffer(GL_ARRAY_BUFFER, 0);
-glBindVertexArray(0);
-
-vbo_ready_ = false;
-num_points_gpu_ =0;
-
-return true;
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindVertexArray(0);
+    return true;
 }
 
-void OpenGLPointCloudNode::upload_points_to_gpu(const std::vector<PointVertex> &pts){
-  if(!vbo_)return;
+bool OpenGLPointCloudNode::setupRouteBuffers(GLuint &route_vao, GLuint &route_vbo) {
+    glGenVertexArrays(1, &route_vao);
+    glGenBuffers(1, &route_vbo);
 
-  //bind ptr data
-  glBindBuffer(GL_ARRAY_BUFFER, vbo_);
-  glBufferData(GL_ARRAY_BUFFER, pts.size() * sizeof(PointVertex), pts.data(), GL_STATIC_DRAW);
-  glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindVertexArray(route_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, route_vbo);
+    glBufferData(GL_ARRAY_BUFFER, 0 , nullptr, GL_DYNAMIC_DRAW);
 
-  num_points_gpu_ = pts.size();
-  vbo_ready_ = (num_points_gpu_ > 0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0,3,GL_FLOAT,GL_FALSE,sizeof(glm::vec3),(void*)0);
 
-  RCLCPP_INFO(this->get_logger(), "Uploaded %zu points to GPU", num_points_gpu_);
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    return true;
 }
 
-void OpenGLPointCloudNode::on_pcd_path(const std_msgs::msg::String::SharedPtr msg) {
-    std::vector<PointVertex> new_points;
-
-    if (!load_point_cloud(msg->data, new_points)) {
-        RCLCPP_ERROR(this->get_logger(), "Failed to load file: %s", msg->data.c_str());
-        return;
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        points_ = std::move(new_points);
-        have_points_ = true;
-    }
-
-    // Upload to GPU
-    upload_points_to_gpu(points_);
-    RCLCPP_INFO(this->get_logger(), "Loaded %zu points", points_.size());
+void OpenGLPointCloudNode::merge_points(const std::vector<PointVertex> &new_points) {
+   //Todo: add voxel down sampel and also remove overlap
+   for (auto& p:  new_points) {
+       map_points_.push_back(p);
+       update_map_bounds(p);
+   }
 }
 
-bool OpenGLPointCloudNode::load_point_cloud(const std::string &path, std::vector<PointVertex> &out)
+void OpenGLPointCloudNode::update_map_bounds(const PointVertex &p) {
+    map_min_x_ = std::min(map_min_x_, p.p_[0]);
+    map_min_y_ = std::min(map_min_y_, p.p_[1]);
+    map_min_z_ = std::min(map_min_z_, p.p_[2]);
+
+    map_max_x_ = std::max(map_max_x_, p.p_[0]);
+    map_max_y_ = std::max(map_max_y_, p.p_[1]);
+    map_max_z_ = std::max(map_max_z_, p.p_[2]);
+}
+
+bool OpenGLPointCloudNode::load_point_cloud(const std::string &path)
 {
     // Open as binary file
     std::ifstream fin(path, std::ios::binary);
@@ -292,16 +620,7 @@ bool OpenGLPointCloudNode::load_point_cloud(const std::string &path, std::vector
     // Typical Velodyne/KITTI: x,y,z,intensity -> 4 floats per point
     // But we also allow 3 floats/point (xyz only) as a fallback.
     std::size_t fields_per_point = 3;
-    if (num_floats % 5 == 0) {
-        fields_per_point = 5;
-    } else if (num_floats % 4 == 0) {
-        fields_per_point = 4;
-    } else {
-        RCLCPP_ERROR(this->get_logger(),
-                     "Unexpected binary layout in %s (floats=%zu, not divisible by 3 or 4)",
-                     path.c_str(), num_floats);
-        return false;
-    }
+    const float inv = 1.0 / voxel_size_;
 
     std::size_t num_points = num_floats / fields_per_point;
     if (num_points == 0) {
@@ -317,9 +636,6 @@ bool OpenGLPointCloudNode::load_point_cloud(const std::string &path, std::vector
     }
 
     // Convert to raw xyz points (ignore intensity / extra fields)
-    std::vector<PointVertex> raw;
-    raw.reserve(num_points);
-
     for (std::size_t i = 0; i < num_points; ++i) {
         const float x = buffer[i * fields_per_point + 0];
         const float y = buffer[i * fields_per_point + 1];
@@ -331,52 +647,39 @@ bool OpenGLPointCloudNode::load_point_cloud(const std::string &path, std::vector
         else {
           intensity = z;
         }
-        raw.push_back({{x, y, z},intensity});
-    }
+        PtrVoxelKey key{
+            static_cast<int32_t>(std::floor(x * inv)),
+             static_cast<int32_t>(std::floor(y * inv)),
+             static_cast<int32_t>(std::floor(z * inv))
+        };
+        // we want to get the value which is the average of ptrs in voxel
 
+        auto res = voxel_maps_.emplace(key, VoxelAccum{});
+        VoxelAccum& a = res.first->second;
+        a.sx += x;
+        a.sy += y;
+        a.sz += z;
+        a.si += intensity;
+        a.count += 1;
 
-    float minx = std::numeric_limits<float>::max();
-    float miny = std::numeric_limits<float>::max();
-    float minz = std::numeric_limits<float>::max();
-    float maxx = std::numeric_limits<float>::lowest();
-    float maxy = std::numeric_limits<float>::lowest();
-    float maxz = std::numeric_limits<float>::lowest();
-
-    for (auto &p : raw) {
-        minx = std::min(minx, p.p_[0]); maxx = std::max(maxx, p.p_[0]);
-        miny = std::min(miny, p.p_[1]); maxy = std::max(maxy, p.p_[1]);
-        minz = std::min(minz, p.p_[2]); maxz = std::max(maxz, p.p_[2]);
-    }
-
-    float cx = 0.5f * (minx + maxx);
-    float cy = 0.5f * (miny + maxy);
-    float cz = 0.5f * (minz + maxz);
-
-    float range_x = maxx - minx;
-    float range_y = maxy - miny;
-    float range_z = maxz - minz;
-    float max_range = std::max(range_x, std::max(range_y, range_z));
-    if (max_range <= 0.0f) max_range = 1.0f;
-
-    float scale = 2.0f / max_range;
-
-    out.clear();
-    out.reserve(raw.size());
-
-    for (auto &p : raw) {
-        Point3f point = p.p_;
-        PointVertex vertex;
-        point[0] = (point[0] - cx) * scale;
-        point[1] = (point[1] - cy) * scale;
-        point[2] = (point[2] - cz) * scale;
-        vertex.p_ = point;
-        if(fields_per_point >=4) {
-            vertex.intensity_ = p.intensity_;
+        auto makeRenderPoint= [](VoxelAccum& va)-> PointVertex {
+          PointVertex pv;
+          const float inv_count = 1.0f / static_cast<float>(va.count);
+          pv.p_[0] = static_cast<float>(va.sx * inv_count);
+          pv.p_[1] = static_cast<float>(va.sy * inv_count);
+          pv.p_[2] = static_cast<float>(va.sz * inv_count);
+          pv.intensity_= static_cast<float>(va.si * inv_count);
+          return pv;
+        };
+        PointVertex cp = makeRenderPoint(a);
+        update_map_bounds(cp);
+        if(res.second) {
+          a.render_idx_ = map_points_.size();
+          map_points_.push_back(cp);
         }
         else {
-           vertex.intensity_ = point[2];
+          map_points_[a.render_idx_] = cp;
         }
-        out.push_back(vertex);
     }
     return true;
 }
@@ -385,6 +688,10 @@ void OpenGLPointCloudNode::render_frame(float t){
   if(!window_){
     return;
   }
+
+  consume_pending_frames();
+  update_scene_state();
+
   // events
   glfwPollEvents();
 
@@ -396,39 +703,155 @@ void OpenGLPointCloudNode::render_frame(float t){
   glClearColor(0.05f, 0.05f, 0.1f, 1.0f);
   glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-  if(!vbo_ready_ ||num_points_gpu_ ==0){
-   glfwSwapBuffers(window_);
-   return;
-  }
-  //Set up mvp
-  glm::mat4 proj = glm::perspective(
-  glm::radians(60.0f),
-  aspect,
-  0.1f,
-  100.0f);
- glm::vec3 cam_pos(0.0f, zoom_ , 0.0); // z is point out  of the screen
- glm::vec3 cam_target(0.0f, 0.0f, 0.0f);
- glm::vec3 cam_up(0.0f, 0.0f, 1.0f); // y is on up
- glm::mat4 view = glm::lookAt(cam_pos, cam_target, cam_up);
+  glm::mat4 mvp = compute_mvp(aspect);
+    draw_points_layer(
+       mvp,
+       vao_1_,
+       vbo_ready_1_,
+       num_points_gpu_1_,
+       glm::vec3(1.0f, 1.0f, 1.0f)
+       );
 
- //glm::mat4 model = glm::rotate(glm::mat4(1.0f), glm::radians(t*10.0f), glm::vec3(0.0f, 0.0f, 1.0f));
-  glm ::mat4 model(1.0f);
-    model = glm::rotate(model, glm::radians(yaw_deg_), glm::vec3(0.0f, 0.0f, 1.0f));
-    model = glm::rotate(model, glm::radians(pitch_deg_), glm::vec3(1.0f, 0.0f, 0.0f));
- glm::mat4 mvp = proj * view * model;
+    draw_points_layer(
+        mvp,
+        vao_2_,
+        vbo_ready_2_,
+        num_points_gpu_2_,
+        glm::vec3(0.0f, 1.0f, 0.0f)
+        );
 
- //draw
- glUseProgram(shader_program_);
- GLint loc_mvp = glGetUniformLocation(shader_program_, "u_mvp");
- glUniformMatrix4fv(loc_mvp, 1, GL_FALSE, glm::value_ptr(mvp));
+    draw_route_layer(
+        mvp,
+        route_vao_1_,
+        route_vbo_ready_1_,
+        num_route_points_1_,
+        glm::vec3(1,0,0));
 
-  glBindVertexArray(vao_);
-  glDrawArrays(GL_POINTS, 0, static_cast<GLsizei>(num_points_gpu_));
-  glBindVertexArray(0);
-
-  glUseProgram(0);
+    draw_route_layer(
+        mvp,
+        route_vao_2_,
+        route_vbo_ready_2_,
+        num_route_points_2_,
+        glm::vec3(0,1,0));
   glfwSwapBuffers(window_);
 }
+
+void OpenGLPointCloudNode::update_scene_state() {
+    if (auto_fit_pending_ && (!map_points_1_.empty() || !map_points_2_.empty())) {
+        compute_view_params();
+        auto_fit_pending_ = false;
+    }
+
+    if (gpu_dirty_1_) {
+        upload_points_to_gpu(
+            map_points_1_,
+            vbo_1_,
+            vbo_ready_1_,
+            num_points_gpu_1_);
+
+        gpu_dirty_1_ = false;
+    }
+
+    if (gpu_dirty_2_) {
+        upload_points_to_gpu(
+            map_points_2_,
+            vbo_2_,
+            vbo_ready_2_,
+            num_points_gpu_2_);
+
+        gpu_dirty_2_ = false;
+    }
+
+    if (route_gpu_dirty_1_) {
+        upload_route_to_gpu(
+            route_points_1_,
+            route_vbo_1_,
+            route_vbo_ready_1_,
+            num_route_points_1_);
+
+        route_gpu_dirty_1_ = false;
+    }
+
+    if (route_gpu_dirty_2_) {
+        upload_route_to_gpu(
+            route_points_2_,
+            route_vbo_2_,
+            route_vbo_ready_2_,
+            num_route_points_2_);
+
+        route_gpu_dirty_2_ = false;
+    }
+}
+
+ glm::mat4 OpenGLPointCloudNode::compute_mvp(float aspect) const {
+    /*Point (x,y,z)
+        ↓
+        model
+    World space
+        ↓ view
+    Camera space0
+        ↓ projection
+    Clip space → screen
+    */
+
+    float dist = base_distance_ * zoom_;
+
+     // 2. Convert angles (VERY IMPORTANT: degrees → radians)
+     float pitch = glm::radians(pitch_deg_);
+     float yaw   = glm::radians(yaw_deg_);
+
+     // 3. Compute camera offset using spherical coordinates
+     glm::vec3 offset;
+     offset.x = dist * std::cos(pitch) * std::sin(yaw);
+     offset.y = dist * std::cos(pitch) * std::cos(yaw);
+     offset.z = dist * std::sin(pitch);
+
+    glm::vec3 cam_target = view_center_;
+     glm::vec3 cam_pos = cam_target + offset;
+     glm::vec3 cam_up = cam_up = glm::vec3(0.0f, 0.0f, 1.0f);
+     // if (std::abs(std::abs(pitch_deg_) - 90.0f) < 0.1f) {
+     //     // near top-down → use Y as up
+     //     cam_up = glm::vec3(0.0f, 1.0f, 0.0f);
+     // } else {
+     //     // normal case → Z is up
+     //     cam_up = glm::vec3(0.0f, 0.0f, 1.0f);
+     // }
+
+     // 7. Projection matrix (Perspective)
+     glm::mat4 proj = glm::perspective(
+         glm::radians(60.0f),                 // FOV
+         aspect,                              // width / height
+         0.1f,                                // near plane
+         10.0f * base_distance_ + 100.0f       // far plane
+     );
+
+    glm::mat4 view = glm::lookAt(cam_pos, cam_target, cam_up);
+
+    glm::mat4 model(1.0f);
+    // Usually you do NOT rotate model again if camera yaw/pitch already controls view.
+    // Keep this identity unless you really want object rotation.
+    return proj * view * model;
+}
+
+void OpenGLPointCloudNode::compute_view_params() {
+    float range_x = map_max_x_ - map_min_x_;
+    float range_y = map_max_y_ - map_min_y_;
+    float range_z = map_max_z_ - map_min_z_;
+    float max_range = std::max(range_x, std::max(range_y, range_z));
+    if (max_range < 1.0f) {
+        max_range = 1.0f;
+    }
+
+    view_center_ = glm::vec3(
+        0.5f * (map_min_x_ + map_max_x_),
+        0.5f * (map_min_y_ + map_max_y_),
+        0.5f * (map_min_z_ + map_max_z_)
+    );
+
+    base_distance_ = 1.5f * max_range + 1.0f;
+}
+
+
 
 void OpenGLPointCloudNode::scroll_callback(GLFWwindow* window,
                                            double xoffset,
@@ -440,12 +863,14 @@ void OpenGLPointCloudNode::scroll_callback(GLFWwindow* window,
         glfwGetWindowUserPointer(window));
     if (!self) return;
 
-    // yoffset > 0 : scroll up, yoffset < 0 : scroll down
-    self->zoom_ -= static_cast<float>(yoffset) * 0.5f;  // adjust speed here
+    if (yoffset > 0.0) {
+        self->zoom_ *= 0.9f;
+    } else if (yoffset < 0.0) {
+        self->zoom_ *= 1.1f;
+    }
 
-    // Clamp zoom between [1, 50]
-    if (self->zoom_ < 1.0f)  self->zoom_ = 1.0f;
-    if (self->zoom_ > 50.0f) self->zoom_ = 50.0f;
+    if (self->zoom_ < 0.1f) self->zoom_ = 0.1f;
+    if (self->zoom_ > 20.0f) self->zoom_ = 20.0f;
 }
 
 void OpenGLPointCloudNode::mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {

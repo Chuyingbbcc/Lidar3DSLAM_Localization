@@ -16,8 +16,6 @@
 #include "DataType.h"
 
 
-
-
 void KeyFrame::write(std::ostream &os) {
     auto saveSE3 = [](std::ostream& ss, SE3d pose)->void{
         auto q = pose.so3().unit_quaternion();
@@ -51,7 +49,7 @@ void KeyFrame::read(std::istream &is) {
    scd_opti_pose_ = load_SE3(is);
 }
 
-void writeToFile(const std::string &path, const std::unordered_map<size_t,std::shared_ptr<KeyFrame>>& kf_map) {
+void writeToFile(const std::string &path, const std::map<size_t,std::shared_ptr<KeyFrame>>& kf_map) {
    std::ofstream os(path, std::ios::app);
    for(auto& it : kf_map) {
      it.second->write(os);
@@ -59,7 +57,7 @@ void writeToFile(const std::string &path, const std::unordered_map<size_t,std::s
    os.close();
 }
 
-void loadKeyFrames(const std::string &path, std::unordered_map<size_t, std::shared_ptr<KeyFrame>> &kf_map) {
+void loadKeyFrames(const std::string &path, std::map<size_t, std::shared_ptr<KeyFrame>> &kf_map) {
     std::ifstream out(path, std::ios::app);
     if (!out) {
         std::cerr << "Failed to open file\n";
@@ -84,6 +82,34 @@ void loadKeyFrames(const std::string &path, std::unordered_map<size_t, std::shar
         }
         kf->cloud_size_ = kf->cloud_ptr_->size();
         kf_map.emplace(kf->id_, kf);
+    }
+}
+
+void  KeyFrameQueue::push(std::shared_ptr<KeyFrame> kf) {
+   {
+      std::lock_guard<std::mutex>lock(mtx_);
+      q_.push(kf);
+   }
+   cv_.notify_one();
+}
+
+bool KeyFrameQueue::wait_and_pop(std::shared_ptr<KeyFrame>& kf) {
+   std::unique_lock<std::mutex> lock(mtx_);
+   cv_.wait(lock, [&]() {
+      return !q_.empty() || stop_requested_;
+   });
+   if(q_.empty()) {
+     return false;
+   }
+   kf = q_.front();
+   q_.pop();
+   return true;
+}
+
+void KeyFrameQueue::stop() {
+    {
+       std::lock_guard<std::mutex> lock(mtx_);
+       stop_requested_ =true;
     }
 }
 

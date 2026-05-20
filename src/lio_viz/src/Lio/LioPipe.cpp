@@ -22,7 +22,7 @@
 #include "lidar_odometry.h"
 #include "common.h"
 #include "KeyFrame.h"
-
+#include "../../include/DataType.h"
 
 
 LioPipe::LioPipe(std::size_t num_thread, double slack, const LioOptions& options): thread_pool_(num_thread), reorder_(slack), options_(options),eskf_(options.eskf_options_), lo_(options.lo_options_) {
@@ -104,14 +104,18 @@ void LioPipe::postProcess() {
             std::shared_ptr<KeyFrame> kf_ptr = std::make_shared<KeyFrame>(t, kf_idx, cur_pose, scan);
             kf_ptr->cloud_path_ = options_.out_cloud_dir_ +"/" + std::to_string(kf_idx) + ".bin";
             kf_ptr-> cloud_size_ = scan->size();
-            // write point cloud and unload point cloud
+            // write point cloud and unload point cloud,only need write original cloud
+            // The point cloud
+            SE3d pose_inv = cur_pose.inverse();
+            transform(scan, pose_inv);
+
             if (!writePointCloudToFile(kf_ptr->cloud_path_, scan)) {
                 std::cerr << "Failed to write point cloud: "<< kf_ptr->cloud_path_ <<"\n";
                 continue;
             }
-            scan->clear();
             kf_update_cb_(kf_idx, kf_ptr);
         }
+        scan->clear();
         num_frames_++;
         eskf_.ObserveSE3(cur_pose);
         last_t1 = t1;
@@ -166,6 +170,11 @@ void LioPipe::notifyEndOfBag() {
     if (lidar_inflight_.load(std::memory_order_acquire) ==0) {
        reorder_.closeInput();
     }
+}
+
+void LioPipe::waitIfDoneQueueToolLarge() {
+   //balance the io and done queue
+   reorder_.waitIfReadyTooLarge();
 }
 
 void LioPipe::waitUntilDrained() {
