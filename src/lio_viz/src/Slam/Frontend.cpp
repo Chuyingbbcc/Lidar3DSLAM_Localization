@@ -2,7 +2,6 @@
 // Created by chuchu on 3/18/26.
 //
 
-#include "../../include/Slam/Frontend.h"
 #include "Slam/Frontend.h"
 #include "io/ros_io_offline.h"
 #include "Lio/imu_buffer.h"
@@ -18,6 +17,8 @@
 #include <iostream>
 #include <mutex>
 #include <yaml-cpp/yaml.h>
+
+#include "../../include/KeyFrame.h"
 
 using namespace std;
 Frontend::Frontend(const std::string &init_path): init_path_(init_path) {
@@ -50,11 +51,17 @@ bool Frontend::Run() {
         lio_pipe_ptr_-> onUpdateKeyFrames(
            [&](const size_t idx , std::shared_ptr<KeyFrame>& kf_ptr)->void{
                key_frame_map_.emplace(idx ,kf_ptr);
-               publishCloudPath(kf_ptr->cloud_path_);
+               publishKeyframe(kf_ptr);
            }
         );
         lio_pipe_ptr_->start();
         bool is_initial = false;
+
+        io_ptr_->onWait(
+           [&]() ->void {
+               lio_pipe_ptr_->waitIfDoneQueueToolLarge();
+           }
+        );
         //
         io_ptr_->onImu([&](const sensor_msgs::msg::Imu& imu_msg, double t_ns) {
            ImuData imu_data;
@@ -101,6 +108,19 @@ bool Frontend::Run() {
             std::cout << "End of bag notified.\n";
 
             lio_pipe_ptr_->stopDrain();
+            bool fist_gps = true;
+            Vec3d origin = Vec3d(0,0,0);
+            for(auto it : key_frame_map_) {
+                Interpolate_gps(it.second->time_, it.second, gps_data_map_);
+                if(fist_gps) {
+                     origin = it.second->rtk_pose_.translation();
+                     fist_gps = false;
+                }
+                it.second->rtk_pose_.translation() -= origin;
+            }
+            if (output_kf_) {
+                writeToFile(fe_options_.lio_options_.out_kf_info_path_, key_frame_map_);
+            }
             std::cout << "Lio pipe drained/stopped.\n";
         } else {
             // forced stop path
@@ -128,6 +148,7 @@ void Frontend::stop() {
         return;
     }
     lio_pipe_ptr_->stopDrain();
+    kf_q_.stop();
 }
 
 
@@ -296,4 +317,20 @@ std::string Frontend::takeNextPath() {
     path_queue_.pop();
    return path;
 }
+
+void Frontend::publishKeyframe(const std::shared_ptr<KeyFrame> kf_ptr) {
+  kf_q_.push(kf_ptr);
+}
+
+std::shared_ptr<KeyFrame> Frontend::takeNextKeyFrame() {
+   std::shared_ptr<KeyFrame>kf_ptr= make_shared<KeyFrame>();
+   kf_q_.wait_and_pop(kf_ptr);
+   return kf_ptr;
+}
+
+std::string Frontend::getOutKfPath() {
+  std::cout<<"getOutKfPath"<<fe_options_.lio_options_.out_kf_info_path_<<std::endl;
+  return fe_options_.lio_options_.out_kf_info_path_;
+}
+
 

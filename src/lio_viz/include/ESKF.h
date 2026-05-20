@@ -64,7 +64,7 @@ private:
   Vec3d g_{0,0, -9.8};
 
   //cov
-  Mat18d cov_ = Mat18d::Zero();
+  Mat18d cov_ = Mat18d::Identity();
   bool fist_set = false;
 
   MotionNoiseD Q_ = MotionNoiseD::Zero();

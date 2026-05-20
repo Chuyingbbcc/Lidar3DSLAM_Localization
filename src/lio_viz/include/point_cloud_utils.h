@@ -161,6 +161,8 @@ struct VoxelAccum {
    double sx = 0.0, sy = 0.0, sz = 0.0;
    double si = 0.0, st = 0.0;
    int count = 0;
+   int render_idx_ = -1;
+
 };
 // inline bool pc2ToPointCloudXYZIT( const std::shared_ptr<sensor_msgs::msg::PointCloud2> msg_ptr,
 //     PointCloud& out,

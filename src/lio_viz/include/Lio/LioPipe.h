@@ -49,6 +49,7 @@ public:
     // void stop();
     void notifyEndOfBag();
     void waitUntilDrained();
+    void waitIfDoneQueueToolLarge();
     void stopDrain();
     void stopNow();
     void start();
