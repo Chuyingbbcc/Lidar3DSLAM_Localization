@@ -15,6 +15,13 @@
 
 #include "DataType.h"
 
+/*
+SE3d lidar_pose_;
+SE3d lidar_pose_neu_;
+SE3d rtk_pose_;
+SE3d fst_opti_pose_;
+SE3d scd_opti_pose_;
+*/
 
 void KeyFrame::write(std::ostream &os) {
     auto saveSE3 = [](std::ostream& ss, SE3d pose)->void{
@@ -26,11 +33,13 @@ void KeyFrame::write(std::ostream &os) {
     os<< id_ << " "<< cloud_path_<< std::setprecision(18)<<" "<< time_ <<" "<<rtk_heading_valid_<<" "<<rtk_valid_ << " "
        << rtk_inlier_ << " ";
     saveSE3(os, lidar_pose_);
+    saveSE3(os, lidar_pose_neu_);
     saveSE3(os, rtk_pose_);
     saveSE3(os, fst_opti_pose_);
     saveSE3(os, scd_opti_pose_);
     os<<std::endl;
 }
+
 
 void KeyFrame::read(std::istream &is) {
    auto load_SE3 = [](std:: istream& ss) -> SE3d {
@@ -44,13 +53,17 @@ void KeyFrame::read(std::istream &is) {
    };
    is>> id_ >>  cloud_path_>> time_ >> rtk_heading_valid_>>rtk_valid_>>rtk_inlier_;
    lidar_pose_ = load_SE3(is);
+   lidar_pose_neu_ = load_SE3(is);
    rtk_pose_ = load_SE3(is);
    fst_opti_pose_ = load_SE3(is);
    scd_opti_pose_ = load_SE3(is);
 }
 
-void writeToFile(const std::string &path, const std::map<size_t,std::shared_ptr<KeyFrame>>& kf_map) {
-   std::ofstream os(path, std::ios::app);
+void writeKeyFramesToFile(const std::string &path, const std::map<size_t,std::shared_ptr<KeyFrame>>& kf_map) {
+   std::ofstream os(path,  std::ios::out|std::ios::trunc);
+   if (!os.is_open()) {
+      return;
+   }
    for(auto& it : kf_map) {
      it.second->write(os);
    }

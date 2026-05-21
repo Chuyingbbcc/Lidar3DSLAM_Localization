@@ -39,7 +39,7 @@ class KeyFrame {
 
 };
 
-void writeToFile(const std::string &path, const std::map<size_t,std::shared_ptr<KeyFrame>>& kf_map);
+void writeKeyFramesToFile(const std::string &path, const std::map<size_t,std::shared_ptr<KeyFrame>>& kf_map);
 void loadKeyFrames(const std::string& path, std::map<size_t,std::shared_ptr<KeyFrame>>& kf_map);
 //
 
