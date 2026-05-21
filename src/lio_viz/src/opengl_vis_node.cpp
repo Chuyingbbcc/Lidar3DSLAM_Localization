@@ -366,11 +366,14 @@ void OpenGLPointCloudNode::consume_pending_frames() {
      local.swap(pending_frames_);
   }
   for(auto& pf :  local) {
-    std::vector<PointVertex>local_points;
+    std::vector<PointVertex>local_points_raw;
+    std::vector<PointVertex> local_points;
     if (layer1_.draw_map_ || layer2_.draw_map_) {
-       if (!load_point_cloud_local(pf.cloud_path_, local_points)) {
+       if (!load_point_cloud_local(pf.cloud_path_, local_points_raw)) {
            continue;
        }
+       //Todo:: change the voxel size later
+       local_points = voxelDownsampleLocal(local_points, 0.2);
     }
     append_frame_to_layer(pf, local_points, layer1_, map_points_1_, route_points_1_);
     append_frame_to_layer(pf, local_points, layer2_, map_points_2_, route_points_2_);
@@ -596,93 +599,6 @@ void OpenGLPointCloudNode::update_map_bounds(const PointVertex &p) {
     map_max_z_ = std::max(map_max_z_, p.p_[2]);
 }
 
-bool OpenGLPointCloudNode::load_point_cloud(const std::string &path)
-{
-    // Open as binary file
-    std::ifstream fin(path, std::ios::binary);
-    if (!fin.is_open()) {
-        RCLCPP_ERROR(this->get_logger(), "Cannot open binary file: %s", path.c_str());
-        return false;
-    }
-
-    // Get file size in bytes
-    fin.seekg(0, std::ios::end);
-    std::streampos nbytes = fin.tellg();
-    if (nbytes <= 0) {
-        RCLCPP_ERROR(this->get_logger(), "Empty or invalid file: %s", path.c_str());
-        return false;
-    }
-    fin.seekg(0, std::ios::beg);
-
-    std::size_t total_bytes  = static_cast<std::size_t>(nbytes);
-    std::size_t num_floats   = total_bytes / sizeof(float);
-
-    // Typical Velodyne/KITTI: x,y,z,intensity -> 4 floats per point
-    // But we also allow 3 floats/point (xyz only) as a fallback.
-    std::size_t fields_per_point = 3;
-    const float inv = 1.0 / voxel_size_;
-
-    std::size_t num_points = num_floats / fields_per_point;
-    if (num_points == 0) {
-        RCLCPP_ERROR(this->get_logger(), "No points in file: %s", path.c_str());
-        return false;
-    }
-
-    std::vector<float> buffer(num_floats);
-    fin.read(reinterpret_cast<char*>(buffer.data()), total_bytes);
-    if (!fin.good()) {
-        RCLCPP_ERROR(this->get_logger(), "Failed to read binary data from %s", path.c_str());
-        return false;
-    }
-
-    // Convert to raw xyz points (ignore intensity / extra fields)
-    for (std::size_t i = 0; i < num_points; ++i) {
-        const float x = buffer[i * fields_per_point + 0];
-        const float y = buffer[i * fields_per_point + 1];
-        const float z = buffer[i * fields_per_point + 2];
-        float intensity =1.0f;
-        if (fields_per_point >=4) {
-          intensity = buffer[i*fields_per_point+3];
-        }
-        else {
-          intensity = z;
-        }
-        PtrVoxelKey key{
-            static_cast<int32_t>(std::floor(x * inv)),
-             static_cast<int32_t>(std::floor(y * inv)),
-             static_cast<int32_t>(std::floor(z * inv))
-        };
-        // we want to get the value which is the average of ptrs in voxel
-
-        auto res = voxel_maps_.emplace(key, VoxelAccum{});
-        VoxelAccum& a = res.first->second;
-        a.sx += x;
-        a.sy += y;
-        a.sz += z;
-        a.si += intensity;
-        a.count += 1;
-
-        auto makeRenderPoint= [](VoxelAccum& va)-> PointVertex {
-          PointVertex pv;
-          const float inv_count = 1.0f / static_cast<float>(va.count);
-          pv.p_[0] = static_cast<float>(va.sx * inv_count);
-          pv.p_[1] = static_cast<float>(va.sy * inv_count);
-          pv.p_[2] = static_cast<float>(va.sz * inv_count);
-          pv.intensity_= static_cast<float>(va.si * inv_count);
-          return pv;
-        };
-        PointVertex cp = makeRenderPoint(a);
-        update_map_bounds(cp);
-        if(res.second) {
-          a.render_idx_ = map_points_.size();
-          map_points_.push_back(cp);
-        }
-        else {
-          map_points_[a.render_idx_] = cp;
-        }
-    }
-    return true;
-}
 
 void OpenGLPointCloudNode::render_frame(float t){
   if(!window_){
@@ -851,6 +767,37 @@ void OpenGLPointCloudNode::compute_view_params() {
     base_distance_ = 1.5f * max_range + 1.0f;
 }
 
+std::vector<PointVertex> OpenGLPointCloudNode::voxelDownsampleLocal(const std::vector<PointVertex> &input,
+    double voxel_size) {
+    std::unordered_map<PtrVoxelKey, VoxelAccum, PtrVoxelHash> voxel_map;
+    const float inv = 1.0f / static_cast<float>(voxel_size);
+    for (const auto& p : input) {
+       PtrVoxelKey key{
+         static_cast<int32_t>(std::floor(p.p_[0] * inv)),
+         static_cast<int32_t>(std::floor(p.p_[1] * inv)),
+         static_cast<int32_t>(std::floor(p.p_[2] * inv))
+       };
+       auto& a = voxel_map[key];
+       a.sx += p.p_[0];
+       a.sy += p.p_[1];
+       a.sz += p.p_[2];
+       a.count += 1;
+    }
+    std::vector<PointVertex>output;
+    output.reserve(voxel_map.size());
+    for (auto&kv :voxel_map) {
+        const auto& a = kv.second;
+        const float inv_count = 1.0f / static_cast<float>(a.count);
+
+        PointVertex p;
+        p.p_[0] = static_cast<float>(a.sx * inv_count);
+        p.p_[1] = static_cast<float>(a.sy * inv_count);
+        p.p_[2] = static_cast<float>(a.sz * inv_count);
+
+        output.push_back(p);
+    }
+    return output;
+}
 
 
 void OpenGLPointCloudNode::scroll_callback(GLFWwindow* window,

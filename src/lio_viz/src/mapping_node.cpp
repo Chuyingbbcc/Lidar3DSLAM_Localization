@@ -4,6 +4,7 @@
 #include "mapping_node.h"
 #include <iostream>
 #include <thread>
+#include <Eigen/Core>
 
 #include "../include/KeyFrame.h"
 #include "../include/RouteAlign.h"
@@ -49,7 +50,8 @@ for(auto it : kf_map) {
 else if (mode_ == "optimization") {
  //load key frames
   std::map<size_t, std::shared_ptr<KeyFrame>>kf_map;
-  loadKeyFrames("/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/output_temp/kf_output.txt", kf_map);
+  const std::string kf_path = "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/output_temp/kf_output.txt";
+  loadKeyFrames(kf_path, kf_map);
   //convert kf tp nodes(I have to keep the order )
   std::vector<PoseGraphOptimizer::Node>node_vect;
   //convert to aligned pair
@@ -84,7 +86,9 @@ else if (mode_ == "optimization") {
   for(auto& it: kf_map ) {
     auto kf= it.second;
     kf->lidar_pose_neu_ = convert2neu(kf->lidar_pose_);
+    replay_kf_q_.push(it.second);
   }
+  //test now
   //write kf but not pointcloud
 
  // //init optimizer
@@ -155,21 +159,30 @@ void MappingNode::publish_frame() {
   msg.frame_id = nxt_kf_ptr->id_;              // change to your real field
   msg.cloud_path = nxt_kf_ptr->cloud_path_;    // change to your real field
 
-  const auto& T = nxt_kf_ptr->lidar_pose_;           // your SE3 pose
-  Eigen::Vector3d t = T.translation();
-  Eigen::Quaterniond q(T.rotationMatrix());
+  auto se3ToMsgPose= [](const SE3d& T, geometry_msgs::msg::Pose& pose)->void{
+    const Vec3d t =
+       T.translation();
 
-  //Todo:: need to align the new msg content
-  // msg.pose.position.x = t.x();
-  // msg.pose.position.y = t.y();
-  // msg.pose.position.z = t.z();
-  //
-  // msg.pose.orientation.x = q.x();
-  // msg.pose.orientation.y = q.y();
-  // msg.pose.orientation.z = q.z();
-  // msg.pose.orientation.w = q.w();
+    const Eigen::Quaterniond q(
+        T.so3().matrix());
 
-  frame_pub_->publish(msg);
+    pose.position.x = t.x();
+    pose.position.y = t.y();
+    pose.position.z = t.z();
+
+    pose.orientation.x = q.x();
+    pose.orientation.y = q.y();
+    pose.orientation.z = q.z();
+    pose.orientation.w = q.w();
+    return;
+  };
+  /*geometry_msgs/Pose lidar_pose
+    geometry_msgs/Pose rtk_pose
+    geometry_msgs/Pose lidar_pose_neu*/
+   se3ToMsgPose(nxt_kf_ptr->lidar_pose_, msg.lidar_pose);
+   se3ToMsgPose(nxt_kf_ptr->lidar_pose_neu_, msg.lidar_pose_neu);
+   se3ToMsgPose(nxt_kf_ptr->rtk_pose_, msg.rtk_pose);
+   frame_pub_->publish(msg);
 }
 
 void MappingNode::on_timer(){

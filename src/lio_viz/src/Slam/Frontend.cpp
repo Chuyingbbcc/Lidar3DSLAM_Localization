@@ -119,7 +119,7 @@ bool Frontend::Run() {
                 it.second->rtk_pose_.translation() -= origin;
             }
             if (output_kf_) {
-                writeToFile(fe_options_.lio_options_.out_kf_info_path_, key_frame_map_);
+                writeKeyFramesToFile(fe_options_.lio_options_.out_kf_info_path_, key_frame_map_);
             }
             std::cout << "Lio pipe drained/stopped.\n";
         } else {

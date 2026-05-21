@@ -326,7 +326,7 @@ TEST(IO, TEST_KEY_FRMAES) {
       Interpolate_gps(it.second->time_, it.second, gps_data_map);
    }
    std::string output_path = "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/output_temp/kf_output.txt";
-   writeToFile(output_path, key_frame_map);
+   writeKeyFramesToFile(output_path, key_frame_map);
 
    std::map <size_t, std::shared_ptr<KeyFrame>> out_kf_map;
    loadKeyFrames(output_path, out_kf_map);

@@ -72,7 +72,6 @@ private:
     void on_key_frame_callback(const lio_msgs::msg::FrameData::SharedPtr msg);
     void consume_pending_frames();
     void append_frame_to_layer(const PendingFrame& pf, const std::vector<PointVertex>& local_points, const RenderLayerConfig& config, std::vector<PointVertex>& map_points, std::vector<glm::vec3>& route_points);
-    bool load_point_cloud(const std::string &path);
     bool load_point_cloud_local(const std::string &path, std::vector<PointVertex>& out_points);
     void merge_points(const std::vector<PointVertex>& new_points);
     void update_map_bounds(const PointVertex& p);
@@ -182,9 +181,9 @@ private:
    bool auto_fit_pending_ = false;
 
    double voxel_size_ = 0.1f;
-   std::unordered_map<PtrVoxelKey,  VoxelAccum, PtrVoxelHash>voxel_maps_;
    //helper functions
    void compute_view_params();
+   std::vector<PointVertex> voxelDownsampleLocal(const std::vector<PointVertex>&input, double voxel_size);
    bool selectPose(const PendingFrame& pf, PoseType pose, glm::mat4& T)const;
    glm::vec3 getTranslation(const glm::mat4& T)const;
    bool setupPointBuffers(GLuint& vao, GLuint&vbo);
