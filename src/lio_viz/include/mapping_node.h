@@ -11,6 +11,13 @@
 #include "Slam/Frontend.h"
 #include "Slam/Optimization.h"
 
+enum class  MapMode {
+   frontend = 0,
+   optimization = 1,
+   replay_frontend =2,
+   replay_optimization = 3,
+};
+
 class MappingNode : public rclcpp::Node {
 public:
 MappingNode();
@@ -29,8 +36,11 @@ std::thread slam_thread_;
 //replay
 std::queue<std::shared_ptr<KeyFrame>>replay_kf_q_;
 
-};
 
+//helper
+void writeVisualizationConfig(const std::string config_path, MapMode mode);
+
+};
 
 
 #endif //MAPPING_NODE_H
