@@ -20,6 +20,8 @@
 #include <string>
 #include <mutex>
 #include <queue>
+#include <yaml-cpp/yaml.h>
+
 using Point3f =Point<float,3>;
 
 struct PointVertex {
@@ -52,6 +54,8 @@ struct RenderLayerConfig {
     PoseType route_pose_type_ = PoseType::RTK;
     bool draw_map_ = true;
     bool draw_route_ = true;
+    glm::vec3 map_color_ = {0.0f, 0.0f, 0.0f};
+    glm::vec3 route_color_ = {0.0f, 0.0f, 0.0f};
 };
 
 class OpenGLPointCloudNode : public rclcpp::Node {
@@ -181,18 +185,24 @@ private:
    bool auto_fit_pending_ = false;
 
    double voxel_size_ = 0.1f;
-   //helper functions
-   void compute_view_params();
-   std::vector<PointVertex> voxelDownsampleLocal(const std::vector<PointVertex>&input, double voxel_size);
-   bool selectPose(const PendingFrame& pf, PoseType pose, glm::mat4& T)const;
-   glm::vec3 getTranslation(const glm::mat4& T)const;
-   bool setupPointBuffers(GLuint& vao, GLuint&vbo);
-   bool setupRouteBuffers(GLuint& route_vao, GLuint& route_vbo);
 
+   //event call back
    static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
    static void mouse_button_callback(GLFWwindow* window, int button, int action, int mods);
    static void cursor_pos_callback(GLFWwindow* window, double xpos, double ypos);
 
+    //helper functions
+    void compute_view_params();
+    std::vector<PointVertex> voxelDownsampleLocal(const std::vector<PointVertex>&input, double voxel_size);
+    bool selectPose(const PendingFrame& pf, PoseType pose, glm::mat4& T)const;
+    glm::vec3 getTranslation(const glm::mat4& T)const;
+    bool setupPointBuffers(GLuint& vao, GLuint&vbo);
+    bool setupRouteBuffers(GLuint& route_vao, GLuint& route_vbo);
+
+    //config helper
+    bool loadVisNodeConfig(const std::string& path);
+    void loadLayerConfig(const YAML::Node& node, RenderLayerConfig& layer);
+    PoseType parsePoseType(const std::string& s);
 };
 
 glm::mat4 poseMsgToGlm(const geometry_msgs::msg::Pose& pose) {

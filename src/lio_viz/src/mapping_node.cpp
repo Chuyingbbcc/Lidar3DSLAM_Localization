@@ -151,7 +151,7 @@ void MappingNode::publish_frame() {
   if (mode_ == "optimization") {
     return;
   }
-  if (mode_ == "mapping") {
+  else if (mode_ == "mapping") {
     nxt_kf_ptr = frontend_ptr_->takeNextKeyFrame();
  }
  else {
@@ -185,7 +185,6 @@ void MappingNode::publish_frame() {
     pose.orientation.y = q.y();
     pose.orientation.z = q.z();
     pose.orientation.w = q.w();
-    return;
   };
   /*geometry_msgs/Pose lidar_pose
     geometry_msgs/Pose rtk_pose
@@ -254,7 +253,7 @@ void MappingNode::writeVisualizationConfig(const std::string config_path, MapMod
     cfg["vis"]["layer2"]["route_color"].push_back(0.0);
   }
   else if (mode == MapMode::replay_optimization) {
-    cfg["vis"]["layer1"]["draw_map"] = true;
+    cfg["vis"]["layer1"]["draw_map"] = false;
     cfg["vis"]["layer1"]["draw_route"] = true;
     cfg["vis"]["layer1"]["map_pose"] = "lidar_rtk";
     cfg["vis"]["layer1"]["route_pose"] = "lidar_rtk";
@@ -266,9 +265,9 @@ void MappingNode::writeVisualizationConfig(const std::string config_path, MapMod
     cfg["vis"]["layer1"]["route_color"].push_back(0.0);
 
     cfg["vis"]["layer2"]["draw_map"] = false;
-    cfg["vis"]["layer2"]["draw_route"] = false;
+    cfg["vis"]["layer2"]["draw_route"] = true;
     cfg["vis"]["layer2"]["map_pose"] = "1st_opti";
-    cfg["vis"]["layer2"]["route_pose"] = "1st_opti";
+    cfg["vis"]["layer2"]["route_pose"] = "rtk";
     cfg["vis"]["layer2"]["map_color"].push_back(0.0);
     cfg["vis"]["layer2"]["map_color"].push_back(1.0);
     cfg["vis"]["layer2"]["map_color"].push_back(0.0);
