@@ -2,9 +2,13 @@
 // Created by chuchu on 12/12/25.
 //
 #include "mapping_node.h"
+
+
 #include <iostream>
 #include <thread>
 #include <Eigen/Core>
+#include <fstream>
+#include <yaml-cpp/yaml.h>
 
 #include "../include/KeyFrame.h"
 #include "../include/RouteAlign.h"
@@ -39,11 +43,17 @@ if (mode_  == "mapping") {
   }
   });
 }
-else if (mode_ == "replay") {
+else if (mode_ == "replay_front" || mode_ == "replay_optimization") {
 std::map<size_t, std::shared_ptr<KeyFrame>>kf_map;
 loadKeyFrames("/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/output_temp/kf_output.txt", kf_map);
 for(auto it : kf_map) {
   replay_kf_q_.push(it.second);
+}
+if (mode_ == "replay_front") {
+ writeVisualizationConfig(init_path, MapMode::replay_frontend);
+}
+if (mode_ == "replay_optimization") {
+  writeVisualizationConfig(init_path, MapMode::replay_optimization);
 }
 }
 
@@ -86,8 +96,8 @@ else if (mode_ == "optimization") {
   for(auto& it: kf_map ) {
     auto kf= it.second;
     kf->lidar_pose_neu_ = convert2neu(kf->lidar_pose_);
-    replay_kf_q_.push(it.second);
   }
+  writeKeyFramesToFile(kf_path, kf_map);
   //test now
   //write kf but not pointcloud
 
@@ -104,8 +114,6 @@ else if (mode_ == "optimization") {
  //   }
  //   kf_map[it.first]->fst_opti_pose_ = output_poses.at(it.first);
  // }
-
-
 }
 
 timer_ =this->create_wall_timer(
@@ -140,6 +148,9 @@ MappingNode::~MappingNode() {
 
 void MappingNode::publish_frame() {
   std::shared_ptr<KeyFrame>nxt_kf_ptr = nullptr;
+  if (mode_ == "optimization") {
+    return;
+  }
   if (mode_ == "mapping") {
     nxt_kf_ptr = frontend_ptr_->takeNextKeyFrame();
  }
@@ -190,6 +201,124 @@ void MappingNode::on_timer(){
     return;
   }
   publish_frame();
+}
+
+
+//helper functions
+void MappingNode::writeVisualizationConfig(const std::string config_path, MapMode mode) {
+  YAML::Node cfg;
+  if (mode == MapMode::frontend) {
+    cfg["vis"]["layer1"]["draw_map"] = true;
+    cfg["vis"]["layer1"]["draw_route"] = true;
+    cfg["vis"]["layer1"]["map_pose"] = "lidar";
+    cfg["vis"]["layer1"]["route_pose"] = "lidar";
+    cfg["vis"]["layer1"]["map_color"].push_back(1.0);
+    cfg["vis"]["layer1"]["map_color"].push_back(1.0);
+    cfg["vis"]["layer1"]["map_color"].push_back(1.0);
+    cfg["vis"]["layer1"]["route_color"].push_back(1.0);
+    cfg["vis"]["layer1"]["route_color"].push_back(0.0);
+    cfg["vis"]["layer1"]["route_color"].push_back(0.0);
+
+    cfg["vis"]["layer2"]["draw_map"] = false;
+    cfg["vis"]["layer2"]["draw_route"] = false;
+    cfg["vis"]["layer2"]["map_pose"] = "lidar";
+    cfg["vis"]["layer2"]["route_pose"] = "lidar";
+    cfg["vis"]["layer2"]["map_color"].push_back(0.0);
+    cfg["vis"]["layer2"]["map_color"].push_back(1.0);
+    cfg["vis"]["layer2"]["map_color"].push_back(0.0);
+    cfg["vis"]["layer2"]["route_color"].push_back(0.0);
+    cfg["vis"]["layer2"]["route_color"].push_back(1.0);
+    cfg["vis"]["layer2"]["route_color"].push_back(0.0);
+  }
+  else if (mode == MapMode::replay_frontend) {
+    cfg["vis"]["layer1"]["draw_map"] = true;
+    cfg["vis"]["layer1"]["draw_route"] = true;
+    cfg["vis"]["layer1"]["map_pose"] = "lidar";
+    cfg["vis"]["layer1"]["route_pose"] = "lidar";
+    cfg["vis"]["layer1"]["map_color"].push_back(1.0);
+    cfg["vis"]["layer1"]["map_color"].push_back(1.0);
+    cfg["vis"]["layer1"]["map_color"].push_back(1.0);
+    cfg["vis"]["layer1"]["route_color"].push_back(1.0);
+    cfg["vis"]["layer1"]["route_color"].push_back(0.0);
+    cfg["vis"]["layer1"]["route_color"].push_back(0.0);
+
+    cfg["vis"]["layer2"]["draw_map"] = false;
+    cfg["vis"]["layer2"]["draw_route"] = false;
+    cfg["vis"]["layer2"]["map_pose"] = "lidar";
+    cfg["vis"]["layer2"]["route_pose"] = "lidar";
+    cfg["vis"]["layer2"]["map_color"].push_back(0.0);
+    cfg["vis"]["layer2"]["map_color"].push_back(1.0);
+    cfg["vis"]["layer2"]["map_color"].push_back(0.0);
+    cfg["vis"]["layer2"]["route_color"].push_back(0.0);
+    cfg["vis"]["layer2"]["route_color"].push_back(1.0);
+    cfg["vis"]["layer2"]["route_color"].push_back(0.0);
+  }
+  else if (mode == MapMode::replay_optimization) {
+    cfg["vis"]["layer1"]["draw_map"] = true;
+    cfg["vis"]["layer1"]["draw_route"] = true;
+    cfg["vis"]["layer1"]["map_pose"] = "lidar_rtk";
+    cfg["vis"]["layer1"]["route_pose"] = "lidar_rtk";
+    cfg["vis"]["layer1"]["map_color"].push_back(1.0);
+    cfg["vis"]["layer1"]["map_color"].push_back(1.0);
+    cfg["vis"]["layer1"]["map_color"].push_back(1.0);
+    cfg["vis"]["layer1"]["route_color"].push_back(1.0);
+    cfg["vis"]["layer1"]["route_color"].push_back(0.0);
+    cfg["vis"]["layer1"]["route_color"].push_back(0.0);
+
+    cfg["vis"]["layer2"]["draw_map"] = false;
+    cfg["vis"]["layer2"]["draw_route"] = false;
+    cfg["vis"]["layer2"]["map_pose"] = "1st_opti";
+    cfg["vis"]["layer2"]["route_pose"] = "1st_opti";
+    cfg["vis"]["layer2"]["map_color"].push_back(0.0);
+    cfg["vis"]["layer2"]["map_color"].push_back(1.0);
+    cfg["vis"]["layer2"]["map_color"].push_back(0.0);
+    cfg["vis"]["layer2"]["route_color"].push_back(0.0);
+    cfg["vis"]["layer2"]["route_color"].push_back(1.0);
+    cfg["vis"]["layer2"]["route_color"].push_back(0.0);
+  }
+  else {
+    //currently used to test neu
+    cfg["vis"]["layer1"]["draw_map"] = false;
+    cfg["vis"]["layer1"]["draw_route"] = true;
+    cfg["vis"]["layer1"]["map_pose"] = "lidar_rtk";
+    cfg["vis"]["layer1"]["route_pose"] = "lidar_rtk";
+    cfg["vis"]["layer1"]["map_color"].push_back(1.0);
+    cfg["vis"]["layer1"]["map_color"].push_back(1.0);
+    cfg["vis"]["layer1"]["map_color"].push_back(1.0);
+    cfg["vis"]["layer1"]["route_color"].push_back(1.0);
+    cfg["vis"]["layer1"]["route_color"].push_back(0.0);
+    cfg["vis"]["layer1"]["route_color"].push_back(0.0);
+
+    cfg["vis"]["layer2"]["draw_map"] = false;
+    cfg["vis"]["layer2"]["draw_route"] = true;
+    cfg["vis"]["layer2"]["map_pose"] = "1st_opti";
+    cfg["vis"]["layer2"]["route_pose"] = "rtk";
+    cfg["vis"]["layer2"]["map_color"].push_back(0.0);
+    cfg["vis"]["layer2"]["map_color"].push_back(1.0);
+    cfg["vis"]["layer2"]["map_color"].push_back(0.0);
+    cfg["vis"]["layer2"]["route_color"].push_back(0.0);
+    cfg["vis"]["layer2"]["route_color"].push_back(1.0);
+    cfg["vis"]["layer2"]["route_color"].push_back(0.0);
+  }
+  std::ofstream fout(
+      config_path,
+      std::ios::app);
+
+  if (!fout.is_open()) {
+    RCLCPP_ERROR(
+        this->get_logger(),
+        "Failed to open vis config yaml: %s",
+        config_path.c_str());
+    return;
+  }
+
+  fout << cfg;
+  fout.close();
+
+  RCLCPP_INFO(
+      this->get_logger(),
+      "Wrote vis config yaml: %s",
+      config_path.c_str());
 }
 
 
