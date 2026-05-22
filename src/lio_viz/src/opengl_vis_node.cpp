@@ -4,13 +4,14 @@
 //
 
 #include "opengl_vis_node.h"
-#include "../include/opengl_vis_node.h"
+
 
 #include <iostream>
 #include <fstream>
 #include <sstream>
 #include <limits>
 #include <cmath>
+#include <yaml-cpp/yaml.h>
 
 using namespace std;
 
@@ -579,6 +580,98 @@ bool OpenGLPointCloudNode::setupRouteBuffers(GLuint &route_vao, GLuint &route_vb
     glBindVertexArray(0);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     return true;
+}
+
+bool OpenGLPointCloudNode::loadVisNodeConfig(const std::string &path) {
+   YAML::Node cfg;
+   try {
+      cfg = YAML::LoadFile(path);
+   }
+   catch (const std::exception &e) {
+       RCLCPP_ERROR(
+           this->get_logger(),
+           "Failed loading vis yaml %s : %s",
+           path.c_str(),
+           e.what());
+       return false;
+   }
+   auto vis = cfg["vis"];
+   if (!vis){
+    RCLCPP_ERROR(
+        this->get_logger(),
+        "Missing vis section");
+
+    return false;
+   }
+    loadLayerConfig(
+     vis["layer1"],
+     layer1_);
+
+    loadLayerConfig(
+        vis["layer2"],
+        layer2_);
+
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Loaded vis config");
+
+    return true;
+}
+
+void OpenGLPointCloudNode::loadLayerConfig(const YAML::Node &node, RenderLayerConfig &layer) {
+    layer.draw_map_ =
+        node["draw_map"]
+        .as<bool>();
+
+    layer.draw_route_ =
+        node["draw_route"]
+        .as<bool>();
+
+    layer.map_pose_type_ =
+        parsePoseType(
+            node["map_pose"]
+            .as<std::string>());
+
+    layer.route_pose_type_ =
+        parsePoseType(
+            node["route_pose"]
+            .as<std::string>());
+
+    auto map_color =
+        node["map_color"];
+
+    layer.map_color_ =
+        glm::vec3(
+            map_color[0].as<float>(),
+            map_color[1].as<float>(),
+            map_color[2].as<float>());
+
+    auto route_color =
+        node["route_color"];
+
+    layer.route_color_ =
+        glm::vec3(
+            route_color[0].as<float>(),
+            route_color[1].as<float>(),
+            route_color[2].as<float>());
+}
+
+PoseType OpenGLPointCloudNode::parsePoseType(const std::string &s) {
+    if (s == "lidar")
+        return PoseType::LIDAR;
+
+    if (s == "rtk")
+        return PoseType::RTK;
+
+    if (s == "lidar_neu")
+        return PoseType::LIDAR_NEU;
+
+    RCLCPP_WARN(
+        this->get_logger(),
+        "Unknown pose type: %s, fallback to lidar",
+        s.c_str());
+
+    return PoseType::LIDAR;
 }
 
 void OpenGLPointCloudNode::merge_points(const std::vector<PointVertex> &new_points) {
