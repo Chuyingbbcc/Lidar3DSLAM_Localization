@@ -77,21 +77,27 @@ Rigid2D RouteAlign::estimateRigid2D(const std::vector<AlignedPair> &pairs) {
 Rigid2D RouteAlign::estimateRobustRigid2D(const std::vector<AlignedPair> &pairs, double min_motion_dist,
                                                  double keep_ratio, int iterations) {
     std::vector<AlignedPair> filtered;
-    filterByMotion(pairs, filtered, 3.0);
+    filterByMotion(pairs, filtered, 0.2);
     if (filtered.size() < 2) {
        throw std::runtime_error("Not enough pairs for robust estimation");
     }
     Rigid2D R = estimateRigid2D(filtered);
     for (int i=0; i< iterations; i++) {
         std::vector<AlignedPair> scnd_filtered;
+        rejectWorstResiduals(
+            filtered,
+            R,
+            scnd_filtered,
+            keep_ratio);
         if (scnd_filtered.size() < 2) break;
         R = estimateRigid2D(scnd_filtered);
+        filtered = std::move(scnd_filtered);
     }
     return R;
 }
 
 void RouteAlign::filterByMotion(const std::vector<AlignedPair> &pairs, std::vector<AlignedPair>&out,  double min_dist) {
-   if(pairs.empty() == 0) return;
+   if(pairs.size() == 0) return;
    out.push_back(pairs.front());
    Vec3d last = pairs.front().p_odom_;
    for(size_t i = 0; i < pairs.size(); ++i) {
@@ -135,6 +141,7 @@ void RouteAlign::rejectWorstResiduals(const std::vector<AlignedPair> &pairs,
     for(size_t i = 0; i < keep_n; ++i) {
        inliers.push_back(pairs[resVec[i].index_]);
     }
+    out = std::move(inliers);
     return;
 }
 
