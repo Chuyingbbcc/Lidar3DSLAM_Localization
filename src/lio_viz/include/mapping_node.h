@@ -38,9 +38,10 @@ std::queue<std::shared_ptr<KeyFrame>>replay_kf_q_;
 
 
 //helper
-void writeVisualizationConfig(const std::string config_path, MapMode mode);
+void writeVisualizationConfig(const std::string& config_path, MapMode mode);
 
 };
+
 
 
 #endif //MAPPING_NODE_H

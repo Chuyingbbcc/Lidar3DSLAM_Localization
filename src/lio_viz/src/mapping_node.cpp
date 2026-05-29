@@ -2,13 +2,16 @@
 // Created by chuchu on 12/12/25.
 //
 #include "mapping_node.h"
+#include "../include/mapping_node.h"
 
 
 #include <iostream>
 #include <thread>
 #include <Eigen/Core>
 #include <fstream>
+#include <unistd.h>
 #include <yaml-cpp/yaml.h>
+#include <iomanip>
 
 #include "../include/KeyFrame.h"
 #include "../include/RouteAlign.h"
@@ -16,7 +19,39 @@
 #include "io/ros_io_offline.cpp"
 
 using namespace std::chrono_literals;
+static double yawFromR(const Mat3d& R)
+{
+  return std::atan2(R(1, 0), R(0, 0));
+}
 
+static void printPoseDebug(
+    size_t id,
+    const SE3d& lidar_pose,
+    const SE3d& lidar_pose_neu,
+    const SE3d& rtk_pose)
+{
+  const Vec3d t_lidar = lidar_pose.translation();
+  const Vec3d t_neu   = lidar_pose_neu.translation();
+  const Vec3d t_rtk   = rtk_pose.translation();
+
+  const double yaw_lidar = yawFromR(lidar_pose.rotationMatrix());
+  const double yaw_neu   = yawFromR(lidar_pose_neu.rotationMatrix());
+  const double yaw_rtk   = yawFromR(rtk_pose.rotationMatrix());
+
+  const Vec3d err = t_neu - t_rtk;
+
+  std::cout << std::fixed << std::setprecision(3)
+            << "KF " << id << "\n"
+            << "  lidar t      = " << t_lidar.transpose()
+            << " yaw=" << yaw_lidar << "\n"
+            << "  lidar_neu t  = " << t_neu.transpose()
+            << " yaw=" << yaw_neu << "\n"
+            << "  rtk t        = " << t_rtk.transpose()
+            << " yaw=" << yaw_rtk << "\n"
+            << "  neu-rtk err  = " << err.transpose()
+            << " norm=" << err.norm()
+            << "\n";
+}
 MappingNode::MappingNode(): Node("mapping_node") {
 
 this->declare_parameter<std::string>("mode", "mapping");
@@ -43,18 +78,19 @@ if (mode_  == "mapping") {
   }
   });
 }
-else if (mode_ == "replay_front" || mode_ == "replay_optimization") {
-std::map<size_t, std::shared_ptr<KeyFrame>>kf_map;
-loadKeyFrames("/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/output_temp/kf_output.txt", kf_map);
-for(auto it : kf_map) {
-  replay_kf_q_.push(it.second);
-}
-if (mode_ == "replay_front") {
+else if (mode_ == "rfront" || mode_ == "roptimization") {
+if (mode_ == "rfront") {
  writeVisualizationConfig(init_path, MapMode::replay_frontend);
 }
-if (mode_ == "replay_optimization") {
+if (mode_ == "roptimization") {
+  std::cout<<"write roptimization config"<<std::endl;
   writeVisualizationConfig(init_path, MapMode::replay_optimization);
 }
+  std::map<size_t, std::shared_ptr<KeyFrame>>kf_map;
+  loadKeyFrames("/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/output_temp/kf_output.txt", kf_map);
+  for(auto it : kf_map) {
+    replay_kf_q_.push(it.second);
+  }
 }
 
 else if (mode_ == "optimization") {
@@ -83,20 +119,39 @@ else if (mode_ == "optimization") {
     ap_vect.emplace_back(ap);
   }
   //neu align
-  Rigid2D align = RouteAlign::estimateRobustRigid2D(ap_vect,2,0.85, 10);
-  double z_offset =RouteAlign::estimateMedianZOffset(ap_vect,align);
-  //update lidar_pose_neu_ in kf
-  auto convert2neu = [&](SE3d& in_pose)->SE3d {
-    Mat3d r_align = RouteAlign::yawToRotation3D(align.yaw_);
-    Vec3d t_align(align.t_.x(), align.t_.y(), z_offset);
-    Mat3d R_new = r_align * in_pose.rotationMatrix();
-    Vec3d t_new = r_align * in_pose.translation() + t_align;
-    return SE3d(R_new,t_new);
-  };
-  for(auto& it: kf_map ) {
-    auto kf= it.second;
-    kf->lidar_pose_neu_ = convert2neu(kf->lidar_pose_);
-  }
+    Rigid2D align = RouteAlign::estimateRobustRigid2D(ap_vect, 2, 0.85, 10);
+    double z_offset = RouteAlign::estimateMedianZOffset(ap_vect, align);
+
+    Mat3d R_align = RouteAlign::yawToRotation3D(align.yaw_);
+
+    Vec3d t_align(
+        align.t_.x(),
+        align.t_.y(),
+        z_offset);
+
+    auto convert2neu = [&](const SE3d& in_pose) -> SE3d {
+        Mat3d R_new = R_align * in_pose.rotationMatrix();
+        Vec3d t_new = R_align * in_pose.translation() + t_align;
+
+        return SE3d(R_new, t_new);
+    };
+
+    for (auto& it : kf_map) {
+        auto kf = it.second;
+        kf->lidar_pose_neu_ = convert2neu(kf->lidar_pose_);
+
+        SE3d Tc_i = kf->lidar_pose_neu_ * kf->lidar_pose_.inverse();
+
+        double yaw_i = std::atan2(
+            Tc_i.rotationMatrix()(1, 0),
+            Tc_i.rotationMatrix()(0, 0)
+        );
+
+        std::cout << "kf " << it.first
+                  << " Tc_i yaw = " << yaw_i
+                  << " t = " << Tc_i.translation().transpose()
+                  << std::endl;
+    }
   writeKeyFramesToFile(kf_path, kf_map);
   //test now
   //write kf but not pointcloud
@@ -204,125 +259,105 @@ void MappingNode::on_timer(){
 
 
 //helper functions
-void MappingNode::writeVisualizationConfig(const std::string config_path, MapMode mode) {
-  YAML::Node cfg;
-  if (mode == MapMode::frontend) {
-    cfg["vis"]["layer1"]["draw_map"] = true;
-    cfg["vis"]["layer1"]["draw_route"] = true;
-    cfg["vis"]["layer1"]["map_pose"] = "lidar";
-    cfg["vis"]["layer1"]["route_pose"] = "lidar";
-    cfg["vis"]["layer1"]["map_color"].push_back(1.0);
-    cfg["vis"]["layer1"]["map_color"].push_back(1.0);
-    cfg["vis"]["layer1"]["map_color"].push_back(1.0);
-    cfg["vis"]["layer1"]["route_color"].push_back(1.0);
-    cfg["vis"]["layer1"]["route_color"].push_back(0.0);
-    cfg["vis"]["layer1"]["route_color"].push_back(0.0);
+void MappingNode::writeVisualizationConfig(
+    const std::string& config_path,
+    MapMode mode)
+{
+    YAML::Node cfg;
 
-    cfg["vis"]["layer2"]["draw_map"] = false;
-    cfg["vis"]["layer2"]["draw_route"] = false;
-    cfg["vis"]["layer2"]["map_pose"] = "lidar";
-    cfg["vis"]["layer2"]["route_pose"] = "lidar";
-    cfg["vis"]["layer2"]["map_color"].push_back(0.0);
-    cfg["vis"]["layer2"]["map_color"].push_back(1.0);
-    cfg["vis"]["layer2"]["map_color"].push_back(0.0);
-    cfg["vis"]["layer2"]["route_color"].push_back(0.0);
-    cfg["vis"]["layer2"]["route_color"].push_back(1.0);
-    cfg["vis"]["layer2"]["route_color"].push_back(0.0);
-  }
-  else if (mode == MapMode::replay_frontend) {
-    cfg["vis"]["layer1"]["draw_map"] = true;
-    cfg["vis"]["layer1"]["draw_route"] = true;
-    cfg["vis"]["layer1"]["map_pose"] = "lidar";
-    cfg["vis"]["layer1"]["route_pose"] = "lidar";
-    cfg["vis"]["layer1"]["map_color"].push_back(1.0);
-    cfg["vis"]["layer1"]["map_color"].push_back(1.0);
-    cfg["vis"]["layer1"]["map_color"].push_back(1.0);
-    cfg["vis"]["layer1"]["route_color"].push_back(1.0);
-    cfg["vis"]["layer1"]["route_color"].push_back(0.0);
-    cfg["vis"]["layer1"]["route_color"].push_back(0.0);
+    try {
+        cfg = YAML::LoadFile(config_path);
+    }
+    catch (...) {
+        cfg = YAML::Node();
+    }
 
-    cfg["vis"]["layer2"]["draw_map"] = false;
-    cfg["vis"]["layer2"]["draw_route"] = false;
-    cfg["vis"]["layer2"]["map_pose"] = "lidar";
-    cfg["vis"]["layer2"]["route_pose"] = "lidar";
-    cfg["vis"]["layer2"]["map_color"].push_back(0.0);
-    cfg["vis"]["layer2"]["map_color"].push_back(1.0);
-    cfg["vis"]["layer2"]["map_color"].push_back(0.0);
-    cfg["vis"]["layer2"]["route_color"].push_back(0.0);
-    cfg["vis"]["layer2"]["route_color"].push_back(1.0);
-    cfg["vis"]["layer2"]["route_color"].push_back(0.0);
-  }
-  else if (mode == MapMode::replay_optimization) {
-    cfg["vis"]["layer1"]["draw_map"] = false;
-    cfg["vis"]["layer1"]["draw_route"] = true;
-    cfg["vis"]["layer1"]["map_pose"] = "lidar_rtk";
-    cfg["vis"]["layer1"]["route_pose"] = "lidar_rtk";
-    cfg["vis"]["layer1"]["map_color"].push_back(1.0);
-    cfg["vis"]["layer1"]["map_color"].push_back(1.0);
-    cfg["vis"]["layer1"]["map_color"].push_back(1.0);
-    cfg["vis"]["layer1"]["route_color"].push_back(1.0);
-    cfg["vis"]["layer1"]["route_color"].push_back(0.0);
-    cfg["vis"]["layer1"]["route_color"].push_back(0.0);
+    auto makeColorNode = [](const std::array<float, 3>& c) {
+        YAML::Node node;
+        node.push_back(c[0]);
+        node.push_back(c[1]);
+        node.push_back(c[2]);
+        return node;
+    };
 
-    cfg["vis"]["layer2"]["draw_map"] = false;
-    cfg["vis"]["layer2"]["draw_route"] = true;
-    cfg["vis"]["layer2"]["map_pose"] = "1st_opti";
-    cfg["vis"]["layer2"]["route_pose"] = "rtk";
-    cfg["vis"]["layer2"]["map_color"].push_back(0.0);
-    cfg["vis"]["layer2"]["map_color"].push_back(1.0);
-    cfg["vis"]["layer2"]["map_color"].push_back(0.0);
-    cfg["vis"]["layer2"]["route_color"].push_back(0.0);
-    cfg["vis"]["layer2"]["route_color"].push_back(1.0);
-    cfg["vis"]["layer2"]["route_color"].push_back(0.0);
-  }
-  else {
-    //currently used to test neu
-    cfg["vis"]["layer1"]["draw_map"] = false;
-    cfg["vis"]["layer1"]["draw_route"] = true;
-    cfg["vis"]["layer1"]["map_pose"] = "lidar_rtk";
-    cfg["vis"]["layer1"]["route_pose"] = "lidar_rtk";
-    cfg["vis"]["layer1"]["map_color"].push_back(1.0);
-    cfg["vis"]["layer1"]["map_color"].push_back(1.0);
-    cfg["vis"]["layer1"]["map_color"].push_back(1.0);
-    cfg["vis"]["layer1"]["route_color"].push_back(1.0);
-    cfg["vis"]["layer1"]["route_color"].push_back(0.0);
-    cfg["vis"]["layer1"]["route_color"].push_back(0.0);
+    auto setLayer =
+        [&](YAML::Node layer,
+            bool draw_map,
+            bool draw_route,
+            const std::string& map_pose,
+            const std::string& route_pose,
+            const std::array<float, 3>& map_color,
+            const std::array<float, 3>& route_color)
+    {
+        layer["draw_map"] = draw_map;
+        layer["draw_route"] = draw_route;
+        layer["map_pose"] = map_pose;
+        layer["route_pose"] = route_pose;
+        layer["map_color"] = makeColorNode(map_color);
+        layer["route_color"] = makeColorNode(route_color);
+    };
 
-    cfg["vis"]["layer2"]["draw_map"] = false;
-    cfg["vis"]["layer2"]["draw_route"] = true;
-    cfg["vis"]["layer2"]["map_pose"] = "1st_opti";
-    cfg["vis"]["layer2"]["route_pose"] = "rtk";
-    cfg["vis"]["layer2"]["map_color"].push_back(0.0);
-    cfg["vis"]["layer2"]["map_color"].push_back(1.0);
-    cfg["vis"]["layer2"]["map_color"].push_back(0.0);
-    cfg["vis"]["layer2"]["route_color"].push_back(0.0);
-    cfg["vis"]["layer2"]["route_color"].push_back(1.0);
-    cfg["vis"]["layer2"]["route_color"].push_back(0.0);
-  }
-  std::ofstream fout(
-      config_path,
-      std::ios::app);
+    if (mode == MapMode::frontend) {
+        setLayer(cfg["vis"]["layer1"], true, true,
+                 "lidar", "lidar",
+                 {1, 1, 1}, {1, 0, 0});
 
-  if (!fout.is_open()) {
-    RCLCPP_ERROR(
-        this->get_logger(),
-        "Failed to open vis config yaml: %s",
+        setLayer(cfg["vis"]["layer2"], false, false,
+                 "lidar", "lidar",
+                 {0, 1, 0}, {0, 1, 0});
+    }
+    else if (mode == MapMode::replay_frontend) {
+        setLayer(cfg["vis"]["layer1"], true, true,
+                 "lidar_neu", "lidar_neu",
+                 {1, 1, 1}, {1, 0, 0});
+
+        setLayer(cfg["vis"]["layer2"], false, true,
+                 "lidar", "rtk",
+                 {0, 1, 0}, {0, 1, 0});
+    }
+    else if (mode == MapMode::replay_optimization) {
+        setLayer(cfg["vis"]["layer1"], true, true,
+                 "lidar", "lidar_neu",
+                 {1, 1, 1}, {1, 0, 0});
+
+        setLayer(cfg["vis"]["layer2"], false, true,
+                 "lidar", "rtk",
+                 {0, 1, 0}, {0, 1, 0});
+    }
+    else {
+        RCLCPP_ERROR(
+            get_logger(),
+            "Unknown MapMode: %d",
+            static_cast<int>(mode));
+        return;
+    }
+
+    std::ofstream fout(
+        config_path,
+        std::ios::out | std::ios::trunc);
+
+    if (!fout.is_open()) {
+        RCLCPP_ERROR(
+            get_logger(),
+            "Cannot open %s",
+            config_path.c_str());
+        return;
+    }
+
+    fout << cfg;
+    fout.close();
+
+    RCLCPP_INFO(
+        get_logger(),
+        "Wrote visualization config: %s",
         config_path.c_str());
-    return;
-  }
-
-  fout << cfg;
-  fout.close();
-
-  RCLCPP_INFO(
-      this->get_logger(),
-      "Wrote vis config yaml: %s",
-      config_path.c_str());
 }
 
 
 int main(int argc, char **argv) {
   rclcpp::init(argc, argv);
+  //
+  //sleep(20);
   rclcpp::spin(std::make_shared<MappingNode>());
   rclcpp::shutdown();
   std::cout<<"map node shut down!";
