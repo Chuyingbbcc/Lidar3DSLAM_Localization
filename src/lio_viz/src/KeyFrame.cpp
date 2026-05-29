@@ -47,7 +47,8 @@ void KeyFrame::read(std::istream &is) {
      std::vector<double>out(7);
      ss>> out[0] >> out[1] >> out[2] >> out[3] >> out[4] >> out[5] >> out[6];
      //std::cout<<"read: " << out[0] << out[1] << out[2] <<out[3]<< out[4] << out[5] << out[6]<< std::endl;
-     Eigen::Quaterniond q(out[6], out[5], out[4], out[3]);
+     Eigen::Quaterniond q(out[6], out[3], out[4], out[5]);
+       q.normalize();
      Vec3d t(out[0], out[1], out[2]);
      return SE3d(q, t);
    };
@@ -71,7 +72,7 @@ void writeKeyFramesToFile(const std::string &path, const std::map<size_t,std::sh
 }
 
 void loadKeyFrames(const std::string &path, std::map<size_t, std::shared_ptr<KeyFrame>> &kf_map) {
-    std::ifstream out(path, std::ios::app);
+    std::ifstream out(path);
     if (!out) {
         std::cerr << "Failed to open file\n";
         return;
@@ -88,7 +89,7 @@ void loadKeyFrames(const std::string &path, std::map<size_t, std::shared_ptr<Key
         ss<<line;
         auto kf = std::make_shared<KeyFrame>();
         kf->read(ss);
-        std::cout<<kf->id_<<std::endl;
+        //std::cout<<kf->id_<<std::endl;
         if (!loadPointCloudFromFile(kf->cloud_path_, kf->cloud_ptr_)) {
              std::cerr << "Failed to load keypoints from file" << kf->cloud_path_<<"\n";
              continue;
