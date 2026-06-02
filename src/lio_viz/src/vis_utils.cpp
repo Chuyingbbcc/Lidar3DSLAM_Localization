@@ -59,3 +59,32 @@ bool PointPicker::pickNearest(const Vec3d& w_p, float max_dist, PickPoint& resul
 
     return found;
 }
+
+bool PointPicker::pickNearestRay(const Vec3d& ray_o, const Vec3d& ray_dir,double max_dist,PickPoint& result) {
+    if (dirty_) {
+        build();
+    }
+    double best_d2 = max_dist * max_dist;
+    bool found = false;
+    auto searchLayer = [&](const std::vector<PickPoint>& pts) {
+        for (const auto& pp : pts) {
+            Vec3d v = pp.world_p_ - ray_o;
+            double t =  v.dot(ray_dir);
+            if (t< 0.0) {
+               continue;
+            }
+            //the point on ray which is cloest to the point
+            Vec3d closest_point = pp.world_p_ + ray_dir * t;
+            double d2 = (pp.world_p_ - closest_point).squaredNorm();
+
+            if (d2< best_d2) {
+               best_d2 = d2;
+                result = pp;
+                found =true;
+            }
+        }
+    };
+    searchLayer(pick_points_1_);
+    searchLayer(pick_points_2_);
+    return found;
+}

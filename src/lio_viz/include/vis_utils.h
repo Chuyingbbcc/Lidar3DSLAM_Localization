@@ -23,6 +23,7 @@ public:
     void clear();
     void build();
     bool pickNearest(const Vec3d& w_p, float max_dist, PickPoint& result);
+    bool pickNearestRay(const Vec3d& ray_o, const Vec3d& ray_dir,double max_dist,PickPoint& result);
 private:
     std::vector<PickPoint> pick_points_1_;
     std::vector<PickPoint> pick_points_2_;

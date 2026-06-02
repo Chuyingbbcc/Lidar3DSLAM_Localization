@@ -11,7 +11,11 @@
 #include <sstream>
 #include <limits>
 #include <cmath>
+#include <GLFW/glfw3.h>
+#include <glm/vec3.hpp>
+#include <glm/vec4.hpp>
 #include <yaml-cpp/yaml.h>
+#include "DataType.h"
 
 using namespace std;
 
@@ -70,17 +74,8 @@ OpenGLPointCloudNode::OpenGLPointCloudNode()
      100,
      std::bind(&OpenGLPointCloudNode::on_key_frame_callback, this, std::placeholders::_1));
     RCLCPP_INFO(this->get_logger(), "Visualization node started. Waiting for pcd_path messages...");
+    point_picker_.clear();
 
-    //Todo: hardcode now, replace later with yaml setting file
-    layer1_.draw_map_ = true;
-    layer1_.draw_route_ = true;
-    layer1_.route_pose_type_ = PoseType::LIDAR_NEU;
-    layer1_.map_pose_type_ = PoseType::LIDAR_NEU;
-
-    layer2_.draw_map_ = false;
-    layer2_.draw_route_ = false;
-    layer2_.route_pose_type_ = PoseType::RTK;
-    layer2_.map_pose_type_ = PoseType::LIDAR_NEU;
 }
 
 OpenGLPointCloudNode::~OpenGLPointCloudNode() {
@@ -105,6 +100,7 @@ OpenGLPointCloudNode::~OpenGLPointCloudNode() {
     glfwDestroyWindow(window_);
     glfwTerminate();
   }
+  point_picker_.clear();
 }
 
 bool OpenGLPointCloudNode::init_window() {
@@ -173,7 +169,7 @@ const char* fs_src =R"(
  #version 330 core
 
  in float v_intensity;
- uniform vec3 u_color
+ uniform vec3 u_color;
  out vec4 FragColor;
  void main(){
    FragColor = vec4(u_color, 1.0);
@@ -345,6 +341,19 @@ void OpenGLPointCloudNode::on_pcd_path(const std_msgs::msg::String::SharedPtr ms
 }
 
 void OpenGLPointCloudNode::on_key_frame_callback(const lio_msgs::msg::FrameData::SharedPtr msg) {
+   if(!initialized_) {
+      std::string init_path = "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/Config/config.yaml";
+       if (loadVisNodeConfig(init_path)) {
+           initialized_ = true;
+       }
+   }
+    auto printPose = [&](const char* name, const glm::mat4& T) {
+        double yaw = std::atan2(T[0][1], T[0][0]);
+        std::cout << name
+                  << " t = " << T[3][0] << " " << T[3][1] << " " << T[3][2]
+                  << " yaw = " << yaw
+                  << std::endl;
+   };
    PendingFrame pf;
    pf.frame_id_ = msg->frame_id;
    pf.cloud_path_ = msg->cloud_path;
@@ -352,9 +361,12 @@ void OpenGLPointCloudNode::on_key_frame_callback(const lio_msgs::msg::FrameData:
    pf.rtk_pose_ = poseMsgToGlm(msg->rtk_pose);
    pf.lidar_pose_neu_ = poseMsgToGlm(msg->lidar_pose_neu);
 
-   pf.has_lidar_pose_ = msg->has_lidar_pose;
-   pf.has_rtk_pose_ = msg->has_rtk_pose;
-   pf.has_lidar_pose_neu_ = msg->has_lidar_pose_neu;
+    printPose("lidar", pf.lidar_pose_);
+    printPose("lidar_neu", pf.lidar_pose_neu_);
+
+   // pf.has_lidar_pose_ = msg->has_lidar_pose;
+   // pf.has_rtk_pose_ = msg->has_rtk_pose;
+   // pf.has_lidar_pose_neu_ = msg->has_lidar_pose_neu;
 
    std::lock_guard<std::mutex>lock(pending_mutex_);
    pending_frames_.push_back(std::move(pf));
@@ -366,7 +378,9 @@ void OpenGLPointCloudNode::consume_pending_frames() {
      std::lock_guard<std::mutex> lock(pending_mutex_);
      local.swap(pending_frames_);
   }
+
   for(auto& pf :  local) {
+    std::cout<<"frame id: "<<pf.frame_id_<<std::endl;
     std::vector<PointVertex>local_points_raw;
     std::vector<PointVertex> local_points;
     if (layer1_.draw_map_ || layer2_.draw_map_) {
@@ -374,7 +388,7 @@ void OpenGLPointCloudNode::consume_pending_frames() {
            continue;
        }
        //Todo:: change the voxel size later
-       local_points = voxelDownsampleLocal(local_points, 0.2);
+       local_points = voxelDownsampleLocal(local_points_raw, 0.2);
     }
     append_frame_to_layer(pf, local_points, layer1_, map_points_1_, route_points_1_);
     append_frame_to_layer(pf, local_points, layer2_, map_points_2_, route_points_2_);
@@ -394,6 +408,7 @@ void OpenGLPointCloudNode::consume_pending_frames() {
       }
     auto_fit_pending_ = true;
   }
+  point_picker_.build();
 }
 
 void OpenGLPointCloudNode::append_frame_to_layer(const PendingFrame &pf, const std::vector<PointVertex> &local_points,
@@ -401,7 +416,9 @@ void OpenGLPointCloudNode::append_frame_to_layer(const PendingFrame &pf, const s
     if (config.draw_map_) {
        //convert local points to wc
        glm::mat4 T_map;
+
        if(selectPose(pf, config.map_pose_type_, T_map)) {
+           size_t point_idx =0;
            for (const auto& p : local_points) {
                glm::vec4 q = T_map * glm::vec4(p.p_[0], p.p_[1], p.p_[2], 1.0f);
                PointVertex wp =p;
@@ -409,8 +426,15 @@ void OpenGLPointCloudNode::append_frame_to_layer(const PendingFrame &pf, const s
                wp.p_[1] = q.y;
                wp.p_[2] = q.z;
 
+               point_idx++;
+               if(point_idx %3 == 0) {
+                 //pick points
+                 Vec3d w_pick_p = {q.x, q.y, q.z};
+                 point_picker_.addPoint(w_pick_p, pf.frame_id_, point_idx, config.id_);
+               }
+
                map_points.push_back(wp);
-               update_map_bounds(wp);
+               update_scene_bounds(glm::vec3(wp.p_[0], wp.p_[1], wp.p_[2]));
            }
        }
     }
@@ -420,6 +444,7 @@ void OpenGLPointCloudNode::append_frame_to_layer(const PendingFrame &pf, const s
             glm::vec3 route_p = getTranslation(T_route);
             if (route_points.empty()|| glm::length(route_points.back()-route_p)> 0.5f) {
               route_points.push_back(route_p);
+              update_scene_bounds(route_p);
             }
         }
     }
@@ -603,10 +628,12 @@ bool OpenGLPointCloudNode::loadVisNodeConfig(const std::string &path) {
 
     return false;
    }
+    layer1_.id_ = 0;
     loadLayerConfig(
      vis["layer1"],
      layer1_);
 
+    layer2_.id_ = 1;
     loadLayerConfig(
         vis["layer2"],
         layer2_);
@@ -678,18 +705,18 @@ void OpenGLPointCloudNode::merge_points(const std::vector<PointVertex> &new_poin
    //Todo: add voxel down sampel and also remove overlap
    for (auto& p:  new_points) {
        map_points_.push_back(p);
-       update_map_bounds(p);
+       update_scene_bounds(glm::vec3(p.p_[0], p.p_[1], p.p_[2]));
    }
 }
 
-void OpenGLPointCloudNode::update_map_bounds(const PointVertex &p) {
-    map_min_x_ = std::min(map_min_x_, p.p_[0]);
-    map_min_y_ = std::min(map_min_y_, p.p_[1]);
-    map_min_z_ = std::min(map_min_z_, p.p_[2]);
+void OpenGLPointCloudNode::update_scene_bounds(const glm::vec3& p) {
+    map_min_x_ = std::min(map_min_x_, p.x);
+    map_min_y_ = std::min(map_min_y_, p.y);
+    map_min_z_ = std::min(map_min_z_, p.z);
 
-    map_max_x_ = std::max(map_max_x_, p.p_[0]);
-    map_max_y_ = std::max(map_max_y_, p.p_[1]);
-    map_max_z_ = std::max(map_max_z_, p.p_[2]);
+    map_max_x_ = std::max(map_max_x_, p.x);
+    map_max_y_ = std::max(map_max_y_, p.y);
+    map_max_z_ = std::max(map_max_z_, p.z);
 }
 
 
@@ -700,7 +727,7 @@ void OpenGLPointCloudNode::render_frame(float t){
 
   consume_pending_frames();
   update_scene_state();
-
+  //std::cout<<"update rendering"<<std::endl;
   // events
   glfwPollEvents();
 
@@ -718,15 +745,15 @@ void OpenGLPointCloudNode::render_frame(float t){
        vao_1_,
        vbo_ready_1_,
        num_points_gpu_1_,
-       glm::vec3(1.0f, 1.0f, 1.0f)
+       layer1_.map_color_
        );
-
+    cur_mvp_ = mvp;
     draw_points_layer(
         mvp,
         vao_2_,
         vbo_ready_2_,
         num_points_gpu_2_,
-        glm::vec3(0.0f, 1.0f, 0.0f)
+        layer2_.map_color_
         );
 
     draw_route_layer(
@@ -734,19 +761,21 @@ void OpenGLPointCloudNode::render_frame(float t){
         route_vao_1_,
         route_vbo_ready_1_,
         num_route_points_1_,
-        glm::vec3(1,0,0));
+        layer1_.route_color_);
 
     draw_route_layer(
         mvp,
         route_vao_2_,
         route_vbo_ready_2_,
         num_route_points_2_,
-        glm::vec3(0,1,0));
+        layer2_.route_color_
+        );
   glfwSwapBuffers(window_);
 }
 
 void OpenGLPointCloudNode::update_scene_state() {
-    if (auto_fit_pending_ && (!map_points_1_.empty() || !map_points_2_.empty())) {
+    if (auto_fit_pending_ && (!map_points_1_.empty() || !map_points_2_.empty()|| !route_points_1_.empty() ||
+     !route_points_2_.empty())) {
         compute_view_params();
         auto_fit_pending_ = false;
     }
@@ -827,11 +856,15 @@ void OpenGLPointCloudNode::update_scene_state() {
      // }
 
      // 7. Projection matrix (Perspective)
+     float near_plane = 0.1f;
+     float far_plane = std::max(
+    1000.0f,
+    dist + 10.0f * base_distance_);
      glm::mat4 proj = glm::perspective(
          glm::radians(60.0f),                 // FOV
          aspect,                              // width / height
-         0.1f,                                // near plane
-         10.0f * base_distance_ + 100.0f       // far plane
+         near_plane,                                // near plane
+         far_plane      // far plane
      );
 
     glm::mat4 view = glm::lookAt(cam_pos, cam_target, cam_up);
@@ -915,38 +948,176 @@ void OpenGLPointCloudNode::scroll_callback(GLFWwindow* window,
 
 void OpenGLPointCloudNode::mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
 (void)mods;
-auto* self = static_cast<OpenGLPointCloudNode*>(glfwGetWindowUserPointer(window));
-if(!self) return;
-if(button == GLFW_MOUSE_BUTTON_LEFT) {
-   if(action == GLFW_PRESS) {
-      self->dragging_ =true;
-      glfwGetCursorPos(window, &self->last_x_, &self->last_y_);
-   }
-   else if(action == GLFW_RELEASE) {
-      self->dragging_ =false;
-   }
-}
+    (void)mods;
+    auto* self =
+        static_cast<OpenGLPointCloudNode*>(
+            glfwGetWindowUserPointer(window));
+
+    if (!self) {
+        return;
+    }
+
+    if (action ==GLFW_PRESS) {
+        glfwGetCursorPos(window, &self->last_x_, &self->last_y_);
+        if (button == GLFW_MOUSE_BUTTON_LEFT) {
+           self->dragging_ = true;
+           self->mouse_down_x_ =self->last_x_;
+           self->mouse_down_y_ =self->last_y_;
+        }
+        if (button == GLFW_MOUSE_BUTTON_RIGHT) {
+           self->panning_ = true;
+        }
+    }
+    else if (action == GLFW_RELEASE) {
+        if (button == GLFW_MOUSE_BUTTON_LEFT) {
+            self->dragging_ = false;
+
+            double release_x;
+            double release_y;
+
+            glfwGetCursorPos(
+                window,
+                &release_x,
+                &release_y);
+
+            double dx = release_x - self->mouse_down_x_;
+            double dy = release_y - self->mouse_down_y_;
+
+            double move2 = dx * dx + dy * dy;
+
+            if (move2 < 25.0) {
+                self->handlePick(release_x, release_y);
+            }
+        }
+        if (button == GLFW_MOUSE_BUTTON_RIGHT) {
+            self->panning_ = false;
+        }
+    }
 }
 
 void OpenGLPointCloudNode::cursor_pos_callback(GLFWwindow* window, double xpos, double ypos) {
   auto* self = static_cast<OpenGLPointCloudNode*>(glfwGetWindowUserPointer(window));
   if (!self)return;
-  if(!self->dragging_)return;
 
    const double dx = xpos - self->last_x_;
    const double dy = ypos - self->last_y_;
    self->last_x_ = xpos;
    self->last_y_ = ypos;
 
-   const float sens =0.2f;
+   if (self->dragging_) {
+       const float sens =0.2f;
 
-   self->yaw_deg_ += sens * static_cast<float>(dx);
-   self->pitch_deg_ += sens * static_cast<float>(dy);
+       self->yaw_deg_ += sens * static_cast<float>(dx);
+       self->pitch_deg_ += sens * static_cast<float>(dy);
 
-   //clamp
-   if (self->pitch_deg_ >89.0) self->pitch_deg_ = 89.0f;
-   if (self->pitch_deg_ < -89.0) self->pitch_deg_ = -89.0f;
+       //clamp
+       if (self->pitch_deg_ >89.0) self->pitch_deg_ = 89.0f;
+       if (self->pitch_deg_ < -89.0) self->pitch_deg_ = -89.0f;
+       return;
+   }
+   if (self->panning_) {
+       float dist = self->base_distance_ * self->zoom_;
+       float pan_scale = 0.001f * dist;
+
+       float yaw = glm::radians(self->yaw_deg_);
+
+       glm::vec3 cam_right(
+           std::cos(yaw),
+           -std::sin(yaw),
+           0.0f);
+
+       glm::vec3 cam_up_world(0.0f, 0.0f, 1.0f);
+
+       self->view_center_ -=
+           cam_right * static_cast<float>(dx) * pan_scale;
+
+       self->view_center_ +=
+           cam_up_world * static_cast<float>(dy) * pan_scale;
+       return;
+   }
+
 }
+void OpenGLPointCloudNode::handlePick(double mouse_x, double mouse_y) {
+   glm::vec3 ray_o_glm;
+   glm::vec3 ray_dir_glm;
+
+   if(!screenRay(mouse_x, mouse_y, ray_o_glm, ray_dir_glm)) {
+       std::cout << "[Pick] failed to build screen ray\n";
+       return;
+   }
+
+    Vec3d ray_o ( ray_o_glm.x,
+         ray_o_glm.y,
+         ray_o_glm.z);
+
+    Vec3d ray_dir( ray_dir_glm.x, ray_dir_glm.y, ray_dir_glm.z);
+
+    PickPoint picked;
+
+    bool ok =  point_picker_.pickNearestRay(ray_o, ray_dir, 1.0, picked);
+
+    if (!ok) {
+        std::cout << "[Pick] no point near ray\n";
+        return;
+    }
+
+    std::cout
+      << "\n===== PICK RESULT =====\n"
+      << "layer_id  = " << picked.layer_id_ << "\n"
+      << "frame_id  = " << picked.frame_id_ << "\n"
+      << "point_idx = " << picked.p_idx_in_frame_ << "\n"
+      << "world     = " << picked.world_p_.transpose() << "\n"
+      << "=======================\n";
+}
+
+bool OpenGLPointCloudNode::
+screenRay(double mouse_x, double mouse_y, glm::vec3 &ray_o, glm::vec3 &ray_dir) const {
+   int width;
+   int height;
+
+   glfwGetWindowSize(
+      window_,
+      &width,
+      &height
+   );
+
+   if (width <= 0 || height <= 0) return false;
+
+   //normal device coordinate
+   float ndc_x =static_cast<float>(2.0 * mouse_x /width - 1.0);
+   float ndc_y =static_cast<float>(1.0 -  2.0* mouse_y /height);
+   glm::mat4 inv_mvp  = glm::inverse(cur_mvp_);
+
+   glm::vec4 near_clip(ndc_x, ndc_y, -1.0f, 1.0f);
+   glm::vec4 far_clip(ndc_x,ndc_y, 1.0f, 1.0f);
+
+   //cvt it to world
+   glm::vec4  near_world = inv_mvp * near_clip;
+   glm::vec4 far_world = inv_mvp * far_clip;
+
+    if (std::abs(near_world.w) < 1e-6f ||
+         std::abs(far_world.w) < 1e-6f) {
+        return false;
+    }
+
+    near_world /= near_world.w;
+    far_world /= far_world.w;
+
+    ray_o = glm::vec3(
+            near_world.x,
+            near_world.y,
+            near_world.z);
+
+    glm::vec3 far_p(
+        far_world.x,
+        far_world.y,
+        far_world.z);
+
+    ray_dir =
+    glm::normalize(far_p - ray_o);
+   return true;
+}
+
 
 int main(int argc , char **argv) {
  rclcpp::init(argc, argv);
