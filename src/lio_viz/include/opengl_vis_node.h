@@ -14,6 +14,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/quaternion.hpp>
+#include "vis_utils.h"
 
 
 #include <vector>
@@ -44,12 +45,13 @@ struct PendingFrame {
    glm::mat4 rtk_pose_ = glm::mat4(1.0f);
    glm::mat4 lidar_pose_neu_ = glm::mat4(1.0f);
 
-    bool has_lidar_pose_ = false;
-    bool has_rtk_pose_ = false;
-    bool has_lidar_pose_neu_ = false;
+    bool has_lidar_pose_ = true;
+    bool has_rtk_pose_ = true;
+    bool has_lidar_pose_neu_ = true;
 };
 
 struct RenderLayerConfig {
+    size_t id_ = 0;
     PoseType map_pose_type_ = PoseType::LIDAR;
     PoseType route_pose_type_ = PoseType::RTK;
     bool draw_map_ = true;
@@ -78,7 +80,7 @@ private:
     void append_frame_to_layer(const PendingFrame& pf, const std::vector<PointVertex>& local_points, const RenderLayerConfig& config, std::vector<PointVertex>& map_points, std::vector<glm::vec3>& route_points);
     bool load_point_cloud_local(const std::string &path, std::vector<PointVertex>& out_points);
     void merge_points(const std::vector<PointVertex>& new_points);
-    void update_map_bounds(const PointVertex& p);
+    void update_scene_bounds(const glm::vec3& p);
     bool init_gl_resources();
     void upload_points_to_gpu(const std::vector<PointVertex>& pts, GLuint vbo, bool& ready, size_t& count);
     void upload_route_to_gpu(const std::vector<glm::vec3>&route_pts, GLuint route_vbo, bool& ready, size_t& count);
@@ -93,6 +95,7 @@ private:
     // std::vector<PointVertex> points_;
     // bool have_points_{false};
 
+    bool initialized_ = false;
     RenderLayerConfig layer1_;
     RenderLayerConfig layer2_;
 
@@ -121,6 +124,9 @@ private:
     //route
     std::mutex route_mutex_;
     //std::vector<glm::vec3>route_points_;
+
+    //point Picker
+    PointPicker point_picker_;
 
 
     //bounding and scale
@@ -172,6 +178,7 @@ private:
    // event call back
    float zoom_;
    //drag state
+   bool panning_ = false;
    bool dragging_ = false;
    double last_x_ =0.0;
    double last_y_= 0.0;
@@ -185,6 +192,14 @@ private:
    bool auto_fit_pending_ = false;
 
    double voxel_size_ = 0.1f;
+
+    glm::mat4 cur_mvp_{1.0f};
+    double mouse_down_x_ = 0.0;
+    double mouse_down_y_ = 0.0;
+
+    void handlePick(double mouse_x, double mouse_y);
+    bool screenRay(double mouse_x, double mouse_y, glm::vec3& ray_o, glm::vec3& ray_dir) const;
+
 
    //event call back
    static void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
@@ -205,18 +220,39 @@ private:
     PoseType parsePoseType(const std::string& s);
 };
 
+
+
 glm::mat4 poseMsgToGlm(const geometry_msgs::msg::Pose& pose) {
-  glm::quat q(pose.orientation.w, pose.orientation.x, pose.orientation.y, pose.orientation.z);
-  glm::mat4 R = glm::mat4_cast(q);
-  glm::mat4 T = glm::translate(
-       glm::mat4(1.0f),
-       glm::vec3(
-         pose.position.x,
-         pose.position.y,
-         pose.position.z
-       )
-  );
-  return T*R;
+    Eigen::Quaterniond q(
+          pose.orientation.w,
+          pose.orientation.x,
+          pose.orientation.y,
+          pose.orientation.z
+      );
+    q.normalize();
+
+    Eigen::Matrix3d R = q.toRotationMatrix();
+
+    glm::mat4 T(1.0f);
+
+    // GLM is column-major: T[col][row]
+    T[0][0] = R(0,0);
+    T[0][1] = R(1,0);
+    T[0][2] = R(2,0);
+
+    T[1][0] = R(0,1);
+    T[1][1] = R(1,1);
+    T[1][2] = R(2,1);
+
+    T[2][0] = R(0,2);
+    T[2][1] = R(1,2);
+    T[2][2] = R(2,2);
+
+    T[3][0] = pose.position.x;
+    T[3][1] = pose.position.y;
+    T[3][2] = pose.position.z;
+    T[3][3] = 1.0f;
+    return T;
 }
 
 
