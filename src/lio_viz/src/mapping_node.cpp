@@ -12,6 +12,7 @@
 #include <unistd.h>
 #include <yaml-cpp/yaml.h>
 #include <iomanip>
+#include "Slam/Backend.h"
 
 #include "../include/KeyFrame.h"
 #include "../include/RouteAlign.h"
@@ -53,7 +54,6 @@ static void printPoseDebug(
             << "\n";
 }
 MappingNode::MappingNode(): Node("mapping_node") {
-
 this->declare_parameter<std::string>("mode", "mapping");
 mode_ = this->get_parameter("mode").as_string();
 std::cout<<"Current mode is: "<<mode_<<std::endl;
@@ -94,65 +94,73 @@ if (mode_ == "roptimization") {
 }
 
 else if (mode_ == "optimization") {
+ //Todo:move neu align to optimization later //
+ Backend backend = Backend(init_path);
+ backend.buildSubmaps();
+ backend.neuAlign();
+ //backend.runLevel1Optimization();
+ //backend.runLevel2Optimization();
+ const std::string kf_path = "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/output_temp/kf_output.txt";
+ writeKeyFramesToFile(kf_path, backend.getKeyFrames());
  //load key frames
-  std::map<size_t, std::shared_ptr<KeyFrame>>kf_map;
-  const std::string kf_path = "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/output_temp/kf_output.txt";
-  loadKeyFrames(kf_path, kf_map);
-  //convert kf tp nodes(I have to keep the order )
-  std::vector<PoseGraphOptimizer::Node>node_vect;
-  //convert to aligned pair
-  std::vector<AlignedPair>ap_vect;
-  for(auto it : kf_map) {
-    PoseGraphOptimizer::Node node;
-    AlignedPair ap;
-    node.id_  = it.first;
-    auto kf = it.second;
-    ap.timestamp_ = kf->time_;
-    ap.p_odom_ = kf->lidar_pose_.translation();
-    ap.p_rtk_ = kf->rtk_pose_.translation();
-    node.pose_init_ = kf->lidar_pose_;
-    if (kf->rtk_valid_) {
-      node.has_gps_ = true;
-      node.gps_pos_ = kf->rtk_pose_.translation();
-    }
-    node_vect.emplace_back(node);
-    ap_vect.emplace_back(ap);
-  }
-  //neu align
-    Rigid2D align = RouteAlign::estimateRobustRigid2D(ap_vect, 2, 0.85, 10);
-    double z_offset = RouteAlign::estimateMedianZOffset(ap_vect, align);
+ //std::map<size_t, std::shared_ptr<KeyFrame>>kf_map;
 
-    Mat3d R_align = RouteAlign::yawToRotation3D(align.yaw_);
-
-    Vec3d t_align(
-        align.t_.x(),
-        align.t_.y(),
-        z_offset);
-
-    auto convert2neu = [&](const SE3d& in_pose) -> SE3d {
-        Mat3d R_new = R_align * in_pose.rotationMatrix();
-        Vec3d t_new = R_align * in_pose.translation() + t_align;
-
-        return SE3d(R_new, t_new);
-    };
-
-    for (auto& it : kf_map) {
-        auto kf = it.second;
-        kf->lidar_pose_neu_ = convert2neu(kf->lidar_pose_);
-
-        SE3d Tc_i = kf->lidar_pose_neu_ * kf->lidar_pose_.inverse();
-
-        double yaw_i = std::atan2(
-            Tc_i.rotationMatrix()(1, 0),
-            Tc_i.rotationMatrix()(0, 0)
-        );
-
-        std::cout << "kf " << it.first
-                  << " Tc_i yaw = " << yaw_i
-                  << " t = " << Tc_i.translation().transpose()
-                  << std::endl;
-    }
-  writeKeyFramesToFile(kf_path, kf_map);
+ //  loadKeyFrames(kf_path, kf_map);
+ //  //convert kf tp nodes(I have to keep the order )
+ //  std::vector<PoseGraphOptimizer::Node>node_vect;
+ //  //convert to aligned pair
+ //  std::vector<AlignedPair>ap_vect;
+ //  for(auto it : kf_map) {
+ //    PoseGraphOptimizer::Node node;
+ //    AlignedPair ap;
+ //    node.id_  = it.first;
+ //    auto kf = it.second;
+ //    ap.timestamp_ = kf->time_;
+ //    ap.p_odom_ = kf->lidar_pose_.translation();
+ //    ap.p_rtk_ = kf->rtk_pose_.translation();
+ //    node.pose_init_ = kf->lidar_pose_;
+ //    if (kf->rtk_valid_) {
+ //      node.has_gps_ = true;
+ //      node.gps_pos_ = kf->rtk_pose_.translation();
+ //    }
+ //    node_vect.emplace_back(node);
+ //    ap_vect.emplace_back(ap);
+ //  }
+ //  //neu align
+ //    Rigid2D align = RouteAlign::estimateRobustRigid2D(ap_vect, 2, 0.85, 10);
+ //    double z_offset = RouteAlign::estimateMedianZOffset(ap_vect, align);
+ //
+ //    Mat3d R_align = RouteAlign::yawToRotation3D(align.yaw_);
+ //
+ //    Vec3d t_align(
+ //        align.t_.x(),
+ //        align.t_.y(),
+ //        z_offset);
+ //
+ //    auto convert2neu = [&](const SE3d& in_pose) -> SE3d {
+ //        Mat3d R_new = R_align * in_pose.rotationMatrix();
+ //        Vec3d t_new = R_align * in_pose.translation() + t_align;
+ //
+ //        return SE3d(R_new, t_new);
+ //    };
+ //
+ //    for (auto& it : kf_map) {
+ //        auto kf = it.second;
+ //        kf->lidar_pose_neu_ = convert2neu(kf->lidar_pose_);
+ //
+ //        SE3d Tc_i = kf->lidar_pose_neu_ * kf->lidar_pose_.inverse();
+ //
+ //        double yaw_i = std::atan2(
+ //            Tc_i.rotationMatrix()(1, 0),
+ //            Tc_i.rotationMatrix()(0, 0)
+ //        );
+ //
+ //        std::cout << "kf " << it.first
+ //                  << " Tc_i yaw = " << yaw_i
+ //                  << " t = " << Tc_i.translation().transpose()
+ //                  << std::endl;
+ //    }
+  //writeKeyFramesToFile(kf_path, kf_map);
   //test now
   //write kf but not pointcloud
 
@@ -247,6 +255,8 @@ void MappingNode::publish_frame() {
    se3ToMsgPose(nxt_kf_ptr->lidar_pose_, msg.lidar_pose);
    se3ToMsgPose(nxt_kf_ptr->lidar_pose_neu_, msg.lidar_pose_neu);
    se3ToMsgPose(nxt_kf_ptr->rtk_pose_, msg.rtk_pose);
+   se3ToMsgPose(nxt_kf_ptr->fst_opti_pose_, msg.fst_optimization_pose);
+   se3ToMsgPose(nxt_kf_ptr->scd_opti_pose_, msg.scd_optimization_pose);
    frame_pub_->publish(msg);
 }
 
@@ -316,13 +326,13 @@ void MappingNode::writeVisualizationConfig(
                  {0, 1, 0}, {0, 1, 0});
     }
     else if (mode == MapMode::replay_optimization) {
-        setLayer(cfg["vis"]["layer1"], true, true,
-                 "lidar", "lidar_neu",
+        setLayer(cfg["vis"]["layer1"], false, true,
+                 "rtk", "rtk",
                  {1, 1, 1}, {1, 0, 0});
 
-        setLayer(cfg["vis"]["layer2"], false, true,
-                 "lidar", "rtk",
-                 {0, 1, 0}, {0, 1, 0});
+        setLayer(cfg["vis"]["layer2"], true, true,
+                 "lidar_neu_", "lidar_neu",
+                 {1, 1, 1}, {0, 1, 0});
     }
     else {
         RCLCPP_ERROR(
@@ -357,7 +367,7 @@ void MappingNode::writeVisualizationConfig(
 int main(int argc, char **argv) {
   rclcpp::init(argc, argv);
   //
-  //sleep(20);
+  //AAa`23  `sleep(20);
   rclcpp::spin(std::make_shared<MappingNode>());
   rclcpp::shutdown();
   std::cout<<"map node shut down!";

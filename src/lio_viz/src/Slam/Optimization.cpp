@@ -44,7 +44,7 @@ PoseGraphOptimizer::PoseGraphOptimizer()= default;
 PoseGraphOptimizer::~PoseGraphOptimizer()=default;
 
 void PoseGraphOptimizer::setNodes(const std::vector<Node> &nodes) {
-    nodes_ = std::move(nodes);
+    nodes_ = nodes;
 }
 
 bool PoseGraphOptimizer::optimize(int iterations) {
@@ -111,7 +111,7 @@ bool PoseGraphOptimizer::buildOptimizer() {
 }
 
 void PoseGraphOptimizer::addVertices() {
-   if (optimizer_) {
+   if (!optimizer_) {
      return;
    }
    //node->vertex
@@ -133,10 +133,16 @@ void PoseGraphOptimizer::addOdomEdges() {
     if (!optimizer_  || nodes_.size()<2) {
         return;
     }
-    Mat6d info = Mat6d::Identity();
+    Mat6d odom_info = Mat6d::Zero();
     //Todo:: tune parameters
-    info.topLeftCorner<3,3>() *= 100;
-    info.bottomRightCorner<3,3>() *= 400;
+    odom_info(0,0) = 1000.0;
+    odom_info(1,1) = 1000.0;
+    odom_info(2,2) = 10.0;
+
+    // rotation roll pitch yaw
+    odom_info(3,3) = 10000.0;
+    odom_info(4,4) = 10000.0;
+    odom_info(5,5) = 20000.0;
 
     for (size_t i=0; i+1 <nodes_.size(); ++i) {
         const SE3d& Ti = nodes_[i].pose_init_;
@@ -148,7 +154,7 @@ void PoseGraphOptimizer::addOdomEdges() {
         edge->setVertex(0, optimizer_->vertex(static_cast<int>(nodes_[i].id_)));
         edge->setVertex(1, optimizer_->vertex(static_cast<int>(nodes_[i+1].id_)));
         edge->setMeasurement(Eigen::Isometry3d(Tij.matrix()));
-        edge->setInformation(info);
+        edge->setInformation(odom_info);
 
         //A RobustKernel is a function used in optimization (e.g., in g2o) to reduce the influence of outlier measurements by down-weighting large residual errors so they don’t distort the solution.
         auto* rk = new g2o::RobustKernelHuber();
@@ -159,10 +165,13 @@ void PoseGraphOptimizer::addOdomEdges() {
 }
 
 void PoseGraphOptimizer::addGpsEdges() {
-    if (optimizer_) {
+    if (!optimizer_) {
        return;
     }
-    Eigen::Matrix3d gps_info = Eigen::Matrix3d::Identity()*10.0;
+    Eigen::Matrix3d gps_info = Eigen::Matrix3d::Zero();
+    gps_info(0,0) = 0.05;
+    gps_info(1,1) = 0.05;
+    gps_info(2,2) = 1000.0;
     for(size_t i=0; i<nodes_.size(); ++i) {
        const auto& node = nodes_[i];
        if(!node.has_gps_) {

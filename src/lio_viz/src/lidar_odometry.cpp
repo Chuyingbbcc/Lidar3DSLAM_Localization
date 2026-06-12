@@ -48,10 +48,50 @@ size_t IncNDTOdometry::AddCloud(std::shared_ptr<PointCloud>& pointcloud, SE3d& p
 
     return trans_dist < max_trans && rot_angle < max_rot;
   };
+  auto yawDeg = [](const SE3d& T) -> double {
+    return std::atan2(
+        T.rotationMatrix()(1, 0),
+        T.rotationMatrix()(0, 0)) * 180.0 / M_PI;
+  };
+
+  auto printDelta = [&](const std::string& tag,
+                        const SE3d& before,
+                        const SE3d& after) {
+    SE3d delta = before.inverse() * after;
+
+    Vec3d dt = delta.translation();
+
+    double trans = dt.norm();
+    double dxy = std::sqrt(dt.x() * dt.x() + dt.y() * dt.y());
+    double dz = dt.z();
+
+    double yaw = yawDeg(delta);
+    double rot3d =
+        delta.so3().log().norm() * 180.0 / M_PI;
+
+    std::cout << "[LO Debug] frame " << cnt_frame_
+              << " " << tag << "\n"
+              << "  before t = "
+              << before.translation().transpose() << "\n"
+              << "  after  t = "
+              << after.translation().transpose() << "\n"
+              << "  dxyz     = "
+              << dt.transpose() << "\n"
+              << "  dxy      = " << dxy << " m\n"
+              << "  dz       = " << dz << " m\n"
+              << "  trans    = " << trans << " m\n"
+              << "  yaw      = " << yaw << " deg\n"
+              << "  rot3d    = " << rot3d << " deg\n"
+              << "----------------------------------"
+              << std::endl;
+  };
+
   SE3d guess = SE3d();
   inc_ndt_->SetSourceCloud(pointcloud);
   if (estimated_vec_.size() <2) {
+    SE3d guess_before_align = guess;
     inc_ndt_->Align(guess);
+    //printDelta("align correction", guess_before_align, guess);
   }
   else{
     if (use_guess) {
@@ -63,9 +103,17 @@ size_t IncNDTOdometry::AddCloud(std::shared_ptr<PointCloud>& pointcloud, SE3d& p
     }else {
       guess = pose;
     }
+    SE3d guess_before_align = guess;
     inc_ndt_->Align(guess);
+    //printDelta("align correction", guess_before_align, guess);
   }
   pose = guess;
+  if (!estimated_vec_.empty()) {
+  // printDelta(
+  //     "relative to previous final pose",
+  //     estimated_vec_.back(),
+  //     pose);
+}
   bool valid =true;
   if (estimated_vec_.size() >0) {
     SE3d dT = estimated_vec_.back().inverse() * pose;
@@ -77,7 +125,7 @@ size_t IncNDTOdometry::AddCloud(std::shared_ptr<PointCloud>& pointcloud, SE3d& p
 
   //transform cur frame
     estimated_vec_.emplace_back(pose);
-    transform(pointcloud, pose);
+    transformCloud(pointcloud, pose);
     inc_ndt_->AddCloud(pointcloud);
   if(IsKeyFrame(pose)) {
     last_pose_ = pose;

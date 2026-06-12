@@ -93,8 +93,8 @@ void LioPipe::postProcess() {
         // }
         //std::cout<<"find " << imu_vec.size() << " imu for lidar "<< t1<< "\n";
         Predict(imu_vec);
-        SE3d cur_pose = eskf_.GetCurrentPose();
-        //SE3d cur_pose = SE3d();
+        //SE3d cur_pose = eskf_.GetCurrentPose();
+        SE3d cur_pose = SE3d();
         size_t kf_idx = lo_.AddCloud(scan, cur_pose, true);
         if(kf_idx == -1 ){
            std::cerr << "Registration failed"<<std::endl;
@@ -107,7 +107,7 @@ void LioPipe::postProcess() {
             // write point cloud and unload point cloud,only need write original cloud
             // The point cloud
             SE3d pose_inv = cur_pose.inverse();
-            transform(scan, pose_inv);
+            transformCloud(scan, pose_inv);
 
             if (!writePointCloudToFile(kf_ptr->cloud_path_, scan)) {
                 std::cerr << "Failed to write point cloud: "<< kf_ptr->cloud_path_ <<"\n";
@@ -222,7 +222,7 @@ void LioPipe::Distort() {
 
 void LioPipe::Align(std::shared_ptr<PointCloud>point_cloud_ptr) {
 //imu->lidar transform
-transform(point_cloud_ptr, TIL_);
+transformCloud(point_cloud_ptr, TIL_);
 //set first scan
 if(!first_scan_set_) {
  SE3d pose;

@@ -29,7 +29,7 @@ bool ESKF::Predict(const ImuData &imu) {
        return false;
     }
     double dt = imu.t - cur_t_;
-    std::cout << "dt" << dt << std::endl;
+    //std::cout << "dt" << dt << std::endl;
     if (dt >(5* options_.imu_dt_)){
       cur_t_= imu.t;
       return false;

@@ -15,9 +15,9 @@ class PoseGraphOptimizer {
 public:
     struct Node {
         size_t id_;
-        double stamp;
+        double t_;
         SE3d pose_init_;
-        bool has_gps_ = false;
+        bool has_gps_ = true;
         Vec3d gps_pos_ = Vec3d::Zero();
     };
     PoseGraphOptimizer();

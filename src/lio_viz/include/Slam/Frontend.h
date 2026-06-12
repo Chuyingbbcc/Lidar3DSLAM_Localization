@@ -47,6 +47,7 @@ class Frontend {
 
     private:
     bool loadFrontendConfig();
+    void saveCurrentKeyFrames();
     std::string init_path_ = "";
     bool publish_viewer_ = true;
     bool output_kf_ =true;
@@ -67,7 +68,9 @@ class Frontend {
     KeyFrameQueue kf_q_;
     bool has_new_kf = false;
 
-
+    size_t lidar_count_ = 0;
+    size_t max_lidar_count_ = 1000;
 };
+
 
 

@@ -26,6 +26,7 @@ class KeyFrame {
    SE3d fst_opti_pose_;
    SE3d scd_opti_pose_;
 
+
    bool rtk_heading_valid_ = false;
    bool rtk_valid_ = true;
    bool rtk_inlier_ = true;
