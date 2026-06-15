@@ -252,3 +252,48 @@ void IncNDT::GenerateNearbyGrids() {
     };
   }
 }
+
+
+double IncNDT::computeScore(const SE3d& pose) const {
+  if (!source_ptr_ || source_ptr_->empty()) {
+    return std::numeric_limits<double>::infinity();
+  }
+  double total_score = 0.0;
+  int valid_count =0;
+
+  for (const auto& p : (*source_ptr_)) {
+    Vec3d p_local(
+           static_cast<double>(p.x),
+           static_cast<double>(p.y),
+           static_cast<double>(p.z));
+    Vec3d p_w  = pose * p_local;
+    //get voxel
+    //find the grid the point belongs to
+    auto key = CastToInt(Vec3d(p_w * opt_.inv_voxel_size_));
+    auto it = pair_map_.find(key);
+    if(it == pair_map_.end()) {
+      continue;
+    }
+    auto& voxel = it->second->second;
+    if(!voxel.estimated_) {
+      continue;
+    }
+
+    Vec3d e = p_w - voxel.mu_;
+    double chi2 = e.transpose() * voxel.info_ * e;
+    if (!std::isfinite(chi2)) {
+      continue;
+    }
+
+    if (chi2 > opt_.res_outlier_threshold_) {
+      continue;
+    }
+    total_score += chi2;
+    valid_count++;
+  }
+  if (valid_count < 30) {
+    std::cout<< "there are no enough points!"<<std::endl;
+    return std::numeric_limits<double>::infinity();
+  }
+  return total_score / static_cast<double>(valid_count);
+}

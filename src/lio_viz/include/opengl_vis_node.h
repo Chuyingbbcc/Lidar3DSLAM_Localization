@@ -33,7 +33,9 @@ struct PointVertex {
 enum class  PoseType {
    LIDAR,
    RTK,
-   LIDAR_NEU
+   LIDAR_NEU,
+   FST_OPTIMIZATION,
+   SCD_OPTIMIZATION
 };
 
 struct PendingFrame {
@@ -44,10 +46,14 @@ struct PendingFrame {
    glm::mat4 lidar_pose_ = glm::mat4(1.0f);
    glm::mat4 rtk_pose_ = glm::mat4(1.0f);
    glm::mat4 lidar_pose_neu_ = glm::mat4(1.0f);
+   glm::mat4 fst_optimization_pose_ = glm::mat4(1.0f);
+   glm::mat4 scd_optimization_pose_ = glm::mat4(1.0f);
 
     bool has_lidar_pose_ = true;
     bool has_rtk_pose_ = true;
     bool has_lidar_pose_neu_ = true;
+    bool has_fst_optimization_pose_ = true;
+    bool has_scd_optimization_pose_ = true;
 };
 
 struct RenderLayerConfig {

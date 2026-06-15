@@ -4,6 +4,7 @@
 //
 
 #include "opengl_vis_node.h"
+#include "../include/opengl_vis_node.h"
 
 
 #include <iostream>
@@ -360,7 +361,8 @@ void OpenGLPointCloudNode::on_key_frame_callback(const lio_msgs::msg::FrameData:
    pf.lidar_pose_ = poseMsgToGlm(msg->lidar_pose);
    pf.rtk_pose_ = poseMsgToGlm(msg->rtk_pose);
    pf.lidar_pose_neu_ = poseMsgToGlm(msg->lidar_pose_neu);
-
+   pf.fst_optimization_pose_= poseMsgToGlm((msg->fst_optimization_pose));
+   pf.scd_optimization_pose_= poseMsgToGlm(msg->scd_optimization_pose);
     printPose("lidar", pf.lidar_pose_);
     printPose("lidar_neu", pf.lidar_pose_neu_);
 
@@ -551,6 +553,22 @@ switch (pose) {
         T = pf.lidar_pose_neu_;
         return true;
     }
+    case PoseType::FST_OPTIMIZATION: {
+        if (!pf.has_fst_optimization_pose_) {
+            return false;
+        }
+        T = pf.fst_optimization_pose_;
+        return true;
+    }
+
+    case PoseType::SCD_OPTIMIZATION: {
+        if (!pf.has_scd_optimization_pose_) {
+            return false;
+        }
+        T = pf.scd_optimization_pose_;
+        return true;
+    }
+
 }
     return false;
 }
@@ -692,6 +710,12 @@ PoseType OpenGLPointCloudNode::parsePoseType(const std::string &s) {
 
     if (s == "lidar_neu")
         return PoseType::LIDAR_NEU;
+
+    if (s == "fst_optimization")
+        return PoseType::FST_OPTIMIZATION;
+
+    if (s== "scd_optimization")
+        return PoseType::SCD_OPTIMIZATION;
 
     RCLCPP_WARN(
         this->get_logger(),

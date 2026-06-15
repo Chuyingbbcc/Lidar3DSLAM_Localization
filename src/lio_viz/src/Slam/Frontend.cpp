@@ -50,7 +50,10 @@ bool Frontend::Run() {
 
         lio_pipe_ptr_-> onUpdateKeyFrames(
            [&](const size_t idx , std::shared_ptr<KeyFrame>& kf_ptr)->void{
-               key_frame_map_.emplace(idx ,kf_ptr);
+               {
+                   std::lock_guard<std::mutex> lock(kf_mutex_);
+                   key_frame_map_.emplace(idx ,kf_ptr);
+               }
                publishKeyframe(kf_ptr);
            }
         );
@@ -71,6 +74,20 @@ bool Frontend::Run() {
         io_ptr_->onLidar([&](const sensor_msgs::msg::PointCloud2& cloud_msg, double t_ns) {
            //l_count++;
            //std:: cout << "The"<<l_count<<"th lidar data is "<<t_ns<<std::endl;
+           if (stop_requested_.load()) {
+             return;
+          }
+
+           lidar_count_++;
+
+      if (lidar_count_ >= max_lidar_count_) {
+          std::cout << "[Frontend] Early stop requested at lidar "
+                    << lidar_count_ << std::endl;
+
+          stop_requested_.store(true);
+          return;
+      }
+
            lio_pipe_ptr_->onLidarMsg(cloud_msg, t_ns);
         });
         io_ptr_->onGps(
@@ -108,23 +125,14 @@ bool Frontend::Run() {
             std::cout << "End of bag notified.\n";
 
             lio_pipe_ptr_->stopDrain();
-            bool fist_gps = true;
-            Vec3d origin = Vec3d(0,0,0);
-            for(auto it : key_frame_map_) {
-                Interpolate_gps(it.second->time_, it.second, gps_data_map_);
-                if(fist_gps) {
-                     origin = it.second->rtk_pose_.translation();
-                     fist_gps = false;
-                }
-                it.second->rtk_pose_.translation() -= origin;
-            }
             if (output_kf_) {
-                writeKeyFramesToFile(fe_options_.lio_options_.out_kf_info_path_, key_frame_map_);
+                saveCurrentKeyFrames();
             }
             std::cout << "Lio pipe drained/stopped.\n";
         } else {
             // forced stop path
             lio_pipe_ptr_->stopNow();
+            saveCurrentKeyFrames();
             std::cout << "Lio pipe force-stopped.\n";
         }
         return ok;
@@ -148,6 +156,8 @@ void Frontend::stop() {
         return;
     }
     lio_pipe_ptr_->stopDrain();
+
+    saveCurrentKeyFrames();
     kf_q_.stop();
 }
 
@@ -331,6 +341,55 @@ std::shared_ptr<KeyFrame> Frontend::takeNextKeyFrame() {
 std::string Frontend::getOutKfPath() {
   std::cout<<"getOutKfPath"<<fe_options_.lio_options_.out_kf_info_path_<<std::endl;
   return fe_options_.lio_options_.out_kf_info_path_;
+}
+
+void Frontend::saveCurrentKeyFrames() {
+    std::lock_guard<std::mutex> lock(kf_mutex_);
+    bool first_gps = true;
+    Vec3d origin = Vec3d::Zero();
+
+    for (auto& it : key_frame_map_) {
+        auto& kf = it.second;
+
+        Interpolate_gps(
+            kf->time_,
+            kf,
+            gps_data_map_);
+
+        if (first_gps) {
+            origin = kf->rtk_pose_.translation();
+            first_gps = false;
+        }
+
+        kf->rtk_pose_.translation() -= origin;
+    }
+
+    if (output_kf_) {
+        writeKeyFramesToFile(
+            fe_options_.lio_options_.out_kf_info_path_,
+            key_frame_map_);
+    }
+
+    std::cout << "[Frontend] Saved current keyframes: "
+              << key_frame_map_.size()
+              << std::endl;
+}
+
+void Frontend::requestStopAndSave() {
+    bool old = stop_requested_.exchange(true);
+    if (old) return;
+
+    std::cout << "[Frontend] Stop requested, saving current KFs...\n";
+
+    if (lio_pipe_ptr_) {
+        lio_pipe_ptr_->stopNow();   // or stopDrain() if you prefer waiting
+    }
+
+    if (output_kf_) {
+        saveCurrentKeyFrames();
+    }
+
+    kf_q_.stop();
 }
 
 

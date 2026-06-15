@@ -22,9 +22,11 @@ class MappingNode : public rclcpp::Node {
 public:
 MappingNode();
 ~MappingNode();
+   void stop_and_save();
 private:
 void on_timer();
 void publish_frame();
+
 std::string mode_;
 rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pub_;
 rclcpp::Publisher<lio_msgs::msg::FrameData>::SharedPtr frame_pub_;

@@ -102,7 +102,7 @@ inline Vec3d ToVec3d(const PointXYZIT& pt) {
     return v;
 }
 
-inline void transform(std::shared_ptr<PointCloud> pts, SE3d& T) {
+inline void transformCloud(std::shared_ptr<PointCloud> pts, SE3d& T) {
     int n = pts->size();
     for(int i=0 ;i<n; i++) {
         auto& ptr = (*pts)[i];
