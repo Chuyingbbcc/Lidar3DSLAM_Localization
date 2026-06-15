@@ -126,6 +126,7 @@ void ESKF::UpdateAndReset() {
 
 
    g_ += dx_.template block<3,1>(15,0);
+   std::cout<< "g: " << g_[0]<< g_[1]<<g_[2]<<std::endl;
 
    Mat18d J = Mat18d::Identity();
    J.template block<3,3>(6,6) = Mat3d::Identity() -0.5*SO3d::hat(dx_.template block<3,1>(6,0));

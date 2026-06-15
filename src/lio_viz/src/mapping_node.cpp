@@ -7,6 +7,7 @@
 
 #include <iostream>
 #include <thread>
+#include <csignal>
 #include <Eigen/Core>
 #include <fstream>
 #include <unistd.h>
@@ -53,6 +54,15 @@ static void printPoseDebug(
             << " norm=" << err.norm()
             << "\n";
 }
+
+static std::atomic<bool> g_exit_requested{false};
+
+void signalHandler(int sig) {
+    g_exit_requested.store(true);
+    // Ctrl+C, kill, Ctrl+Z all come here
+    rclcpp::shutdown();
+}
+
 MappingNode::MappingNode(): Node("mapping_node") {
 this->declare_parameter<std::string>("mode", "mapping");
 mode_ = this->get_parameter("mode").as_string();
@@ -65,6 +75,7 @@ frontend_ptr_ = std::make_unique<Frontend>(init_path);
 //run frontend
 
 if (mode_  == "mapping") {
+  writeVisualizationConfig(init_path, MapMode::frontend);
   slam_thread_ = std::thread([this]() {
     try {
       frontend_ptr_->init();
@@ -94,11 +105,10 @@ if (mode_ == "roptimization") {
 }
 
 else if (mode_ == "optimization") {
- //Todo:move neu align to optimization later //
  Backend backend = Backend(init_path);
  backend.buildSubmaps();
  backend.neuAlign();
- //backend.runLevel1Optimization();
+ backend.runLevel1Optimization();
  //backend.runLevel2Optimization();
  const std::string kf_path = "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/output_temp/kf_output.txt";
  writeKeyFramesToFile(kf_path, backend.getKeyFrames());
@@ -260,11 +270,17 @@ void MappingNode::publish_frame() {
    frame_pub_->publish(msg);
 }
 
+void MappingNode::stop_and_save() {
+    if (frontend_ptr_) {
+        frontend_ptr_->requestStopAndSave();
+    }
+}
+
 void MappingNode::on_timer(){
-  if(!frontend_ptr_) {
-    return;
-  }
-  publish_frame();
+    if (!frontend_ptr_) {
+        return;
+    }
+    publish_frame();
 }
 
 
@@ -312,9 +328,9 @@ void MappingNode::writeVisualizationConfig(
                  "lidar", "lidar",
                  {1, 1, 1}, {1, 0, 0});
 
-        setLayer(cfg["vis"]["layer2"], false, false,
-                 "lidar", "lidar",
-                 {0, 1, 0}, {0, 1, 0});
+        setLayer(cfg["vis"]["layer2"], false, true,
+                 "lidar", "rtk",
+                 {0, 1, 0}, {0, 0, 1});
     }
     else if (mode == MapMode::replay_frontend) {
         setLayer(cfg["vis"]["layer1"], true, true,
@@ -331,7 +347,7 @@ void MappingNode::writeVisualizationConfig(
                  {1, 1, 1}, {1, 0, 0});
 
         setLayer(cfg["vis"]["layer2"], true, true,
-                 "lidar_neu_", "lidar_neu",
+                 "fst_optimization", "fst_optimization",
                  {1, 1, 1}, {0, 1, 0});
     }
     else {
@@ -366,10 +382,23 @@ void MappingNode::writeVisualizationConfig(
 
 int main(int argc, char **argv) {
   rclcpp::init(argc, argv);
-  //
-  //AAa`23  `sleep(20);
-  rclcpp::spin(std::make_shared<MappingNode>());
-  rclcpp::shutdown();
-  std::cout<<"map node shut down!";
-  return 0;
+    std::signal(SIGINT, signalHandler);   // Ctrl+C
+    std::signal(SIGTERM, signalHandler);  // kill PID
+    std::signal(SIGTSTP, signalHandler);  // Ctrl+Z
+    auto node = std::make_shared<MappingNode>();
+
+    rclcpp::spin(node);
+
+    std::cout << "[main] spin exited, saving KFs...\n";
+
+    node->stop_and_save();
+
+    node.reset();
+
+    if (rclcpp::ok()) {
+        rclcpp::shutdown();
+    }
+
+    std::cout << "map node shut down!\n";
+    return 0;
 }

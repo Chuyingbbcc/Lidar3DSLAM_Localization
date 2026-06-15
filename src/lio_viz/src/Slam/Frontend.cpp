@@ -50,7 +50,10 @@ bool Frontend::Run() {
 
         lio_pipe_ptr_-> onUpdateKeyFrames(
            [&](const size_t idx , std::shared_ptr<KeyFrame>& kf_ptr)->void{
-               key_frame_map_.emplace(idx ,kf_ptr);
+               {
+                   std::lock_guard<std::mutex> lock(kf_mutex_);
+                   key_frame_map_.emplace(idx ,kf_ptr);
+               }
                publishKeyframe(kf_ptr);
            }
         );
@@ -153,6 +156,8 @@ void Frontend::stop() {
         return;
     }
     lio_pipe_ptr_->stopDrain();
+
+    saveCurrentKeyFrames();
     kf_q_.stop();
 }
 
@@ -339,6 +344,7 @@ std::string Frontend::getOutKfPath() {
 }
 
 void Frontend::saveCurrentKeyFrames() {
+    std::lock_guard<std::mutex> lock(kf_mutex_);
     bool first_gps = true;
     Vec3d origin = Vec3d::Zero();
 
@@ -367,6 +373,23 @@ void Frontend::saveCurrentKeyFrames() {
     std::cout << "[Frontend] Saved current keyframes: "
               << key_frame_map_.size()
               << std::endl;
+}
+
+void Frontend::requestStopAndSave() {
+    bool old = stop_requested_.exchange(true);
+    if (old) return;
+
+    std::cout << "[Frontend] Stop requested, saving current KFs...\n";
+
+    if (lio_pipe_ptr_) {
+        lio_pipe_ptr_->stopNow();   // or stopDrain() if you prefer waiting
+    }
+
+    if (output_kf_) {
+        saveCurrentKeyFrames();
+    }
+
+    kf_q_.stop();
 }
 
 

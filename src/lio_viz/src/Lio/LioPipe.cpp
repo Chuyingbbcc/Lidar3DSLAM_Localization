@@ -93,9 +93,15 @@ void LioPipe::postProcess() {
         // }
         //std::cout<<"find " << imu_vec.size() << " imu for lidar "<< t1<< "\n";
         Predict(imu_vec);
-        //SE3d cur_pose = eskf_.GetCurrentPose();
-        SE3d cur_pose = SE3d();
-        size_t kf_idx = lo_.AddCloud(scan, cur_pose, true);
+        SE3d cur_pose = eskf_.GetCurrentPose();
+        //SE3d cur_pose = SE3d();
+        size_t kf_idx = -1;
+        if(num_frames_ <= 20) {
+            kf_idx = lo_.AddCloud(scan,cur_pose, true);
+        }
+        else {
+           kf_idx = lo_.AddCloud(scan, cur_pose, false);
+        }
         if(kf_idx == -1 ){
            std::cerr << "Registration failed"<<std::endl;
         }

@@ -108,12 +108,6 @@ size_t IncNDTOdometry::AddCloud(std::shared_ptr<PointCloud>& pointcloud, SE3d& p
     //printDelta("align correction", guess_before_align, guess);
   }
   pose = guess;
-  if (!estimated_vec_.empty()) {
-  // printDelta(
-  //     "relative to previous final pose",
-  //     estimated_vec_.back(),
-  //     pose);
-}
   bool valid =true;
   if (estimated_vec_.size() >0) {
     SE3d dT = estimated_vec_.back().inverse() * pose;

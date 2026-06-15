@@ -296,68 +296,68 @@ void Backend::applyLevel20Correction() {
        if (sm.key_frames_.empty()) {
            continue;
        }
-    //    SE3d delta = sm.pose_optimized_ * sm.pose_init_.inverse();
-    //    //debug
-    // //    Vec3d dt = delta.translation();
-    // //
-    // //    double trans_xy =
-    // //        std::sqrt(
-    // //            dt.x() * dt.x() +
-    // //            dt.y() * dt.y());
-    // //
-    // //    double trans_xyz =
-    // //        dt.norm();
-    // //
-    // //    double yaw_deg =
-    // //        std::atan2(
-    // //            delta.rotationMatrix()(1,0),
-    // //            delta.rotationMatrix()(0,0))
-    // //        * 180.0 / M_PI;
-    // //
-    // //    double rot3d_deg =
-    // //        delta.so3().log().norm()
-    // //        * 180.0 / M_PI;
-    // //
-    // //    std::cout
-    // // << "[Lv2] Submap "
-    // // << sm.id_
-    // // << "\n"
-    // // << "  dxyz      = "
-    // // << dt.transpose()
-    // // << "\n"
-    // // << "  trans_xy  = "
-    // // << trans_xy
-    // // << " m\n"
-    // // << "  trans_xyz = "
-    // // << trans_xyz
-    // // << " m\n"
-    // // << "  yaw       = "
-    // // << yaw_deg
-    // // << " deg\n"
-    // // << "  rot3d     = "
-    // // << rot3d_deg
-    // // << " deg\n"
-    // // << "-----------------------------------"
-    // // << std::endl;
+       SE3d delta = sm.pose_optimized_ * sm.pose_init_.inverse();
+       //debug
+    //    Vec3d dt = delta.translation();
     //
-    //    for (auto& kf : sm.key_frames_) {
-    //        kf->scd_opti_pose_ = delta * kf->fst_opti_pose_;
-    //    }
-       Vec3d t_init =
-            sm.pose_init_.translation();
-
-       Vec3d t_opt =
-           sm.pose_optimized_.translation();
-
-       Vec3d dt =
-           t_opt - t_init;
+    //    double trans_xy =
+    //        std::sqrt(
+    //            dt.x() * dt.x() +
+    //            dt.y() * dt.y());
+    //
+    //    double trans_xyz =
+    //        dt.norm();
+    //
+    //    double yaw_deg =
+    //        std::atan2(
+    //            delta.rotationMatrix()(1,0),
+    //            delta.rotationMatrix()(0,0))
+    //        * 180.0 / M_PI;
+    //
+    //    double rot3d_deg =
+    //        delta.so3().log().norm()
+    //        * 180.0 / M_PI;
+    //
+    //    std::cout
+    // << "[Lv2] Submap "
+    // << sm.id_
+    // << "\n"
+    // << "  dxyz      = "
+    // << dt.transpose()
+    // << "\n"
+    // << "  trans_xy  = "
+    // << trans_xy
+    // << " m\n"
+    // << "  trans_xyz = "
+    // << trans_xyz
+    // << " m\n"
+    // << "  yaw       = "
+    // << yaw_deg
+    // << " deg\n"
+    // << "  rot3d     = "
+    // << rot3d_deg
+    // << " deg\n"
+    // << "-----------------------------------"
+    // << std::endl;
 
        for (auto& kf : sm.key_frames_) {
-           SE3d corrected = kf->fst_opti_pose_;
-           corrected.translation() += dt;
-
-           kf->scd_opti_pose_ = corrected;
+           kf->scd_opti_pose_ = delta * kf->fst_opti_pose_;
        }
+       // Vec3d t_init =
+       //      sm.pose_init_.translation();
+       //
+       // Vec3d t_opt =
+       //     sm.pose_optimized_.translation();
+       //
+       // Vec3d dt =
+       //     t_opt - t_init;
+       //
+       // for (auto& kf : sm.key_frames_) {
+       //     SE3d corrected = kf->fst_opti_pose_;
+       //     corrected.translation() += dt;
+       //
+       //     kf->scd_opti_pose_ = corrected;
+       // }
    }
 }
 

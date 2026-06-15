@@ -137,12 +137,12 @@ void PoseGraphOptimizer::addOdomEdges() {
     //Todo:: tune parameters
     odom_info(0,0) = 1000.0;
     odom_info(1,1) = 1000.0;
-    odom_info(2,2) = 10.0;
+    odom_info(2,2) = 0.01;
 
     // rotation roll pitch yaw
-    odom_info(3,3) = 10000.0;
-    odom_info(4,4) = 10000.0;
-    odom_info(5,5) = 20000.0;
+    odom_info(3,3) = 1000.0;
+    odom_info(4,4) = 1000.0;
+    odom_info(5,5) = 1000.0;
 
     for (size_t i=0; i+1 <nodes_.size(); ++i) {
         const SE3d& Ti = nodes_[i].pose_init_;
@@ -169,9 +169,9 @@ void PoseGraphOptimizer::addGpsEdges() {
        return;
     }
     Eigen::Matrix3d gps_info = Eigen::Matrix3d::Zero();
-    gps_info(0,0) = 0.05;
-    gps_info(1,1) = 0.05;
-    gps_info(2,2) = 1000.0;
+    gps_info(0,0) = 0.001;
+    gps_info(1,1) = 0.001;
+    gps_info(2,2) = 100.0;
     for(size_t i=0; i<nodes_.size(); ++i) {
        const auto& node = nodes_[i];
        if(!node.has_gps_) {
