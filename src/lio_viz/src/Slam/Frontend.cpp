@@ -80,6 +80,7 @@ bool Frontend::Run() {
 
            lidar_count_++;
 
+
       if (lidar_count_ >= max_lidar_count_) {
           std::cout << "[Frontend] Early stop requested at lidar "
                     << lidar_count_ << std::endl;
@@ -209,6 +210,10 @@ bool Frontend::loadFrontendConfig() {
         LidarOdometry::LoOption lo_options;
         if (cfg["kf_distance"]) {
             lo_options.kf_distance_ = cfg["kf_distance"].as<double>();
+        }
+
+        if (cfg["kf_angle_degree"]) {
+            lo_options.kf_angle_degree_ = cfg["kf_angle_degree"].as<double>();
         }
 
         // ndt_options

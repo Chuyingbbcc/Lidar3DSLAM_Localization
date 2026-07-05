@@ -90,6 +90,7 @@ OpenGLPointCloudNode::~OpenGLPointCloudNode() {
     if (route_vao_1_) glDeleteVertexArrays(1, &route_vao_1_);
     if (route_vao_2_) glDeleteVertexArrays(1, &route_vao_2_);
 
+
   if(shader_program_){
     glDeleteProgram(shader_program_);
   }
@@ -166,14 +167,23 @@ bool OpenGLPointCloudNode::init_gl_resources() {
  }
 )";
 
-const char* fs_src =R"(
+    const char* fs_src = R"(
  #version 330 core
 
  in float v_intensity;
  uniform vec3 u_color;
  out vec4 FragColor;
+
  void main(){
-   FragColor = vec4(u_color, 1.0);
+   if (v_intensity >0 && v_intensity < 1.5) {
+      FragColor = vec4(1.0, 0.0, 0.0, 1.0); // loop i
+   }
+   else if (v_intensity >0 &&v_intensity < 2.5) {
+      FragColor = vec4(0.0, 1.0, 0.0, 1.0); // loop j
+   }
+   else {
+      discard;
+   }
  }
 )";
 
@@ -242,6 +252,7 @@ void main() {
 setupPointBuffers(vao_1_, vbo_1_);
 setupPointBuffers(vao_2_, vbo_2_);
 
+
 //------------------------------setup route vbo & vao-------------------------------//
 setupRouteBuffers(route_vao_1_, route_vbo_1_);
 setupRouteBuffers(route_vao_2_, route_vbo_2_);
@@ -252,11 +263,14 @@ vbo_ready_2_ = false;
 route_vbo_ready_1_ = false;
 route_vbo_ready_2_ = false;
 
+
+
 num_points_gpu_1_ = 0;
 num_points_gpu_2_ = 0;
 
 num_route_points_1_ = 0;
 num_route_points_2_ = 0;
+
 
 return true;
 }
@@ -357,14 +371,20 @@ void OpenGLPointCloudNode::on_key_frame_callback(const lio_msgs::msg::FrameData:
    };
    PendingFrame pf;
    pf.frame_id_ = msg->frame_id;
+   pf.submap_id_ = msg->submap_id;
    pf.cloud_path_ = msg->cloud_path;
+   pf.loop_role_ = msg->loop_role;
    pf.lidar_pose_ = poseMsgToGlm(msg->lidar_pose);
    pf.rtk_pose_ = poseMsgToGlm(msg->rtk_pose);
    pf.lidar_pose_neu_ = poseMsgToGlm(msg->lidar_pose_neu);
    pf.fst_optimization_pose_= poseMsgToGlm((msg->fst_optimization_pose));
    pf.scd_optimization_pose_= poseMsgToGlm(msg->scd_optimization_pose);
-    printPose("lidar", pf.lidar_pose_);
-    printPose("lidar_neu", pf.lidar_pose_neu_);
+   pf.loop_optimization_pose_ = poseMsgToGlm(msg->loop_optimization_pose);
+
+
+    //printPose("lidar", pf.lidar_pose_);
+    printPose("lidar_neu", pf.loop_optimization_pose_);
+
 
    // pf.has_lidar_pose_ = msg->has_lidar_pose;
    // pf.has_rtk_pose_ = msg->has_rtk_pose;
@@ -427,14 +447,13 @@ void OpenGLPointCloudNode::append_frame_to_layer(const PendingFrame &pf, const s
                wp.p_[0] = q.x;
                wp.p_[1] = q.y;
                wp.p_[2] = q.z;
-
+               wp.intensity_ = static_cast<float>(pf.loop_role_);
                point_idx++;
                if(point_idx %3 == 0) {
                  //pick points
                  Vec3d w_pick_p = {q.x, q.y, q.z};
-                 point_picker_.addPoint(w_pick_p, pf.frame_id_, point_idx, config.id_);
+                 point_picker_.addPoint(w_pick_p, pf.frame_id_, pf.submap_id_, point_idx, config.id_);
                }
-
                map_points.push_back(wp);
                update_scene_bounds(glm::vec3(wp.p_[0], wp.p_[1], wp.p_[2]));
            }
@@ -566,6 +585,13 @@ switch (pose) {
             return false;
         }
         T = pf.scd_optimization_pose_;
+        return true;
+    }
+    case PoseType::LOOP_OPTIMIZATION: {
+        if (!pf.has_loop_optimization_pose_) {
+            return false;
+        }
+        T = pf.loop_optimization_pose_;
         return true;
     }
 
@@ -717,6 +743,9 @@ PoseType OpenGLPointCloudNode::parsePoseType(const std::string &s) {
     if (s== "scd_optimization")
         return PoseType::SCD_OPTIMIZATION;
 
+    if (s == "loop_optimization")
+        return PoseType::LOOP_OPTIMIZATION;
+
     RCLCPP_WARN(
         this->get_logger(),
         "Unknown pose type: %s, fallback to lidar",
@@ -779,7 +808,6 @@ void OpenGLPointCloudNode::render_frame(float t){
         num_points_gpu_2_,
         layer2_.map_color_
         );
-
     draw_route_layer(
         mvp,
         route_vao_1_,
@@ -802,7 +830,7 @@ void OpenGLPointCloudNode::update_scene_state() {
      !route_points_2_.empty())) {
         compute_view_params();
         auto_fit_pending_ = false;
-    }
+     }
 
     if (gpu_dirty_1_) {
         upload_points_to_gpu(
@@ -1089,6 +1117,7 @@ void OpenGLPointCloudNode::handlePick(double mouse_x, double mouse_y) {
       << "\n===== PICK RESULT =====\n"
       << "layer_id  = " << picked.layer_id_ << "\n"
       << "frame_id  = " << picked.frame_id_ << "\n"
+      << "submap_id = " << picked.submap_id_ << "\n"
       << "point_idx = " << picked.p_idx_in_frame_ << "\n"
       << "world     = " << picked.world_p_.transpose() << "\n"
       << "=======================\n";

@@ -35,12 +35,15 @@ enum class  PoseType {
    RTK,
    LIDAR_NEU,
    FST_OPTIMIZATION,
-   SCD_OPTIMIZATION
+   SCD_OPTIMIZATION,
+   LOOP_OPTIMIZATION
 };
 
 struct PendingFrame {
    uint64_t frame_id_ = 0;
+   uint64_t submap_id_ =0;
    std::string cloud_path_ = "";
+   int loop_role_;
    //glm::vec3 position;
 
    glm::mat4 lidar_pose_ = glm::mat4(1.0f);
@@ -48,12 +51,14 @@ struct PendingFrame {
    glm::mat4 lidar_pose_neu_ = glm::mat4(1.0f);
    glm::mat4 fst_optimization_pose_ = glm::mat4(1.0f);
    glm::mat4 scd_optimization_pose_ = glm::mat4(1.0f);
-
+   glm::mat4 loop_optimization_pose_ = glm::mat4(1.0f);
     bool has_lidar_pose_ = true;
     bool has_rtk_pose_ = true;
     bool has_lidar_pose_neu_ = true;
     bool has_fst_optimization_pose_ = true;
     bool has_scd_optimization_pose_ = true;
+    bool has_loop_optimization_pose_ = true;
+    bool is_loop_closure_ = false;
 };
 
 struct RenderLayerConfig {
@@ -107,6 +112,7 @@ private:
 
     std::vector<PointVertex> map_points_1_;
     std::vector<PointVertex> map_points_2_;
+    //std::vector<PointVertex> loop_points_;
 
     std::vector<glm::vec3> route_points_1_;
     std::vector<glm::vec3> route_points_2_;
@@ -162,9 +168,15 @@ private:
     GLuint route_vao_2_ =0;
     GLuint route_vbo_2_ =0;
 
+    //GLuint loop_vao_ = 0;
+    //GLuint loop_vbo_ = 0;
+
 
    GLuint shader_program_ =0;
    GLuint route_shader_program_ =0;
+
+
+
 
    // bool vbo_ready_ =false;
    // std::size_t num_points_gpu_ =0 ;
@@ -180,6 +192,10 @@ private:
 
    bool route_vbo_ready_2_ =false;
    std::size_t num_route_points_2_ =0;
+
+    //bool loop_vbo_ready_ = false;
+    //bool loop_gpu_dirty_ = false;
+    //size_t num_loop_points_ = 0;
 
    // event call back
    float zoom_;

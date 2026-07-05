@@ -13,7 +13,7 @@ class LidarOdometry {
   struct LoOption {
     LoOption() {}
     double kf_distance_ = 0.2;
-    double kf_angle_degree_ =30;
+    double kf_angle_degree_ =10;
     IncNDTOptions inc_opt_;
   };
   LidarOdometry(){}

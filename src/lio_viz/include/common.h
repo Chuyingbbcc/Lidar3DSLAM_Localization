@@ -114,6 +114,28 @@ inline void transformCloud(std::shared_ptr<PointCloud> pts, SE3d& T) {
     }
 }
 
+inline PointCloud transformCloudCopy(
+    const std::shared_ptr<PointCloud>& cloud,
+    const SE3d& T)
+{
+    PointCloud out;
+    out.reserve(cloud->size());
+    for (const auto& p : (*cloud)) {
+        Vec3d pt(
+            static_cast<double>(p.x),
+            static_cast<double>(p.y),
+            static_cast<double>(p.z));
+
+        Vec3d pt_new = T * pt;
+        auto& q= p;
+        float x= static_cast<float>(pt_new.x());
+        float y = static_cast<float>(pt_new.y());
+        float z = static_cast<float>(pt_new.z());
+        out.emplace_back(x,y,z);
+    }
+    return out;
+}
+
 namespace math {
    void computeMeanAndCov(const std::vector<Vec3d>& pts, Vec3d& out_mu, Mat3d& out_sig);
    void updateMeanAndCov(const std::vector<Vec3d>&pts, const int old_size, const Vec3d& old_mu ,const Mat3d& old_sig, Vec3d& out_mu, Mat3d& out_sig);

@@ -39,12 +39,19 @@ class EdgeSE3GPS: public g2o::BaseUnaryEdge<3, Vec3d, g2o::VertexSE3> {
     bool write(std::ostream&) const override { return false; }
 };
 
-PoseGraphOptimizer::PoseGraphOptimizer()= default;
+PoseGraphOptimizer::PoseGraphOptimizer(OptimizationStage stage): stage_(stage) {
+}
+
 
 PoseGraphOptimizer::~PoseGraphOptimizer()=default;
 
 void PoseGraphOptimizer::setNodes(const std::vector<Node> &nodes) {
     nodes_ = nodes;
+}
+
+void PoseGraphOptimizer::setEdges(const std::vector<Edge>& edges)
+{
+    edges_ = edges;
 }
 
 bool PoseGraphOptimizer::optimize(int iterations) {
@@ -55,8 +62,10 @@ bool PoseGraphOptimizer::optimize(int iterations) {
         return false;
     }
     addVertices();
-    addOdomEdges();
-    addGpsEdges();
+    addRelativeEdges();
+    if(stage_ == OptimizationStage::KF_RTK_OPTI) {
+        addGpsEdges();
+    }
 
     optimizer_ ->initializeOptimization();
     int iters = optimizer_ -> optimize(iterations);
@@ -159,6 +168,34 @@ void PoseGraphOptimizer::addOdomEdges() {
         //A RobustKernel is a function used in optimization (e.g., in g2o) to reduce the influence of outlier measurements by down-weighting large residual errors so they don’t distort the solution.
         auto* rk = new g2o::RobustKernelHuber();
         rk->setDelta(1.0);
+        edge->setRobustKernel(rk);
+        optimizer_->addEdge(edge);
+    }
+}
+
+
+void PoseGraphOptimizer::addRelativeEdges() {
+    if (!optimizer_) {
+        return;
+    }
+    for (const auto& e: edges_) {
+        auto* edge = new g2o::EdgeSE3();
+
+        edge->setVertex(
+            0,
+            optimizer_->vertex(static_cast<int>(e.id_i_)));
+
+        edge->setVertex(
+            1,
+            optimizer_->vertex(static_cast<int>(e.id_j_)));
+
+        edge->setMeasurement(
+            Eigen::Isometry3d(e.T_i_j_.matrix()));
+
+        edge->setInformation(e.info_);
+
+        auto* rk = new g2o::RobustKernelHuber();
+        rk->setDelta(stage_ == OptimizationStage::LOOP_CLOSURE ? 1.0 : 2.0);
         edge->setRobustKernel(rk);
         optimizer_->addEdge(edge);
     }

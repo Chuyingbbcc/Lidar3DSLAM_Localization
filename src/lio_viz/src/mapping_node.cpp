@@ -107,11 +107,17 @@ if (mode_ == "roptimization") {
 else if (mode_ == "optimization") {
  Backend backend = Backend(init_path);
  backend.buildSubmaps();
- backend.neuAlign();
- backend.runLevel1Optimization();
- //backend.runLevel2Optimization();
+ //backend.neuAlign();
+ //update kf fst_opti_pose_
+ //backend.runKfRtkOptimization();
+ //update kf scd_opti_pose_
+ //backend.runSubmapInsideOptimization();
+ //update kf loop_opti_pose_, sm T_w_s_opti_
+ backend.runLoopClosure();
+ //test loop closure
  const std::string kf_path = "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/output_temp/kf_output.txt";
  writeKeyFramesToFile(kf_path, backend.getKeyFrames());
+ std::cout<<"finish here"<<std::endl;
  //load key frames
  //std::map<size_t, std::shared_ptr<KeyFrame>>kf_map;
 
@@ -241,7 +247,11 @@ void MappingNode::publish_frame() {
   msg.header.frame_id = "map";
 
   msg.frame_id = nxt_kf_ptr->id_;              // change to your real field
-  msg.cloud_path = nxt_kf_ptr->cloud_path_;    // change to your real field
+  msg.submap_id = nxt_kf_ptr->submap_id_;
+  msg.loop_role = nxt_kf_ptr->loop_role_;
+  //std::cout<< "submap id: "<< msg.submap_id <<std::endl;
+  msg.cloud_path = nxt_kf_ptr->cloud_path_;
+  msg.is_loop_closure = nxt_kf_ptr->is_loop_closure_;  // change to your real field
 
   auto se3ToMsgPose= [](const SE3d& T, geometry_msgs::msg::Pose& pose)->void{
     const Vec3d t =
@@ -267,11 +277,13 @@ void MappingNode::publish_frame() {
    se3ToMsgPose(nxt_kf_ptr->rtk_pose_, msg.rtk_pose);
    se3ToMsgPose(nxt_kf_ptr->fst_opti_pose_, msg.fst_optimization_pose);
    se3ToMsgPose(nxt_kf_ptr->scd_opti_pose_, msg.scd_optimization_pose);
+   se3ToMsgPose(nxt_kf_ptr->loop_opti_pose_, msg.loop_optimization_pose);
    frame_pub_->publish(msg);
 }
 
 void MappingNode::stop_and_save() {
-    if (frontend_ptr_) {
+    if (frontend_ptr_ && mode_ == "mapping") {
+        std::cout<< "stop mapping mode!"<<std::endl;
         frontend_ptr_->requestStopAndSave();
     }
 }
@@ -334,21 +346,21 @@ void MappingNode::writeVisualizationConfig(
     }
     else if (mode == MapMode::replay_frontend) {
         setLayer(cfg["vis"]["layer1"], true, true,
-                 "lidar_neu", "lidar_neu",
+                 "lidar", "lidar",
                  {1, 1, 1}, {1, 0, 0});
 
-        setLayer(cfg["vis"]["layer2"], false, true,
+        setLayer(cfg["vis"]["layer2"], false, false,
                  "lidar", "rtk",
                  {0, 1, 0}, {0, 1, 0});
     }
     else if (mode == MapMode::replay_optimization) {
         setLayer(cfg["vis"]["layer1"], false, true,
-                 "rtk", "rtk",
-                 {1, 1, 1}, {1, 0, 0});
+                 "scd_optimization", "rtk",
+                 {1, 0, 1}, {1, 0, 0});
 
         setLayer(cfg["vis"]["layer2"], true, true,
-                 "fst_optimization", "fst_optimization",
-                 {1, 1, 1}, {0, 1, 0});
+                 "loop_optimization", "loop_optimization",
+                 {0,0 , 0}, {0, 1, 0});
     }
     else {
         RCLCPP_ERROR(
@@ -382,16 +394,16 @@ void MappingNode::writeVisualizationConfig(
 
 int main(int argc, char **argv) {
   rclcpp::init(argc, argv);
-    std::signal(SIGINT, signalHandler);   // Ctrl+C
-    std::signal(SIGTERM, signalHandler);  // kill PID
-    std::signal(SIGTSTP, signalHandler);  // Ctrl+Z
+    // std::signal(SIGINT, signalHandler);   // Ctrl+C
+    // std::signal(SIGTERM, signalHandler);  // kill PID
+    // std::signal(SIGTSTP, signalHandler);  // Ctrl+Z
     auto node = std::make_shared<MappingNode>();
 
     rclcpp::spin(node);
 
     std::cout << "[main] spin exited, saving KFs...\n";
 
-    node->stop_and_save();
+    //node->stop_and_save();
 
     node.reset();
 

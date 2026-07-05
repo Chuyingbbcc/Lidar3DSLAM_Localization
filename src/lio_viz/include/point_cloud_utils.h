@@ -60,12 +60,24 @@ class PointCloud {
     auto end() const {return pts_.end();}
 
     //modifiers
-    void clear() {pts_.clear();}
+    void clear() {
+        pts_.clear();
+        has_bbox_ = false;
+        min_x_ = min_y_ = min_z_ =  1e30;
+        max_x_ = max_y_ = max_z_ = -1e30;
+    }
     void reserve(size_t n) {pts_.reserve(n);}
-    void resize(size_t n) {pts_.resize(n);}
+    void resize(size_t n) {
+        pts_.resize(n);
+        rebuildBBox();
+    }
     void setTime(const double t) {time_ = t;}
 
-    void push_back(const Point& pt) {pts_.push_back(pt);}
+    void push_back(const Point& pt) {
+        pts_.push_back(pt);
+        updateBBox(pts_.back());
+        updateBBox(pt);
+    }
 
     template<class... Args>
     Point& emplace_back(Args&&... args) {
@@ -74,14 +86,80 @@ class PointCloud {
     }
 
     void append(const Point* src, std::size_t n) {
-       if (n==0)return;
-       const std::size_t old = pts_.size();
-       pts_.resize(old+n);
-       std::copy(src,src+n,pts_.begin()+old);
+        if (n == 0) return;
+
+        pts_.reserve(pts_.size() + n);
+
+        for (std::size_t i = 0; i < n; ++i) {
+            pts_.push_back(src[i]);
+            updateBBox(src[i]);
+        }
     }
+
+    void append(std::shared_ptr<PointCloud>src_ptr, std::size_t n) {
+        if (!src_ptr || n == 0) {
+            return;
+        }
+
+        n = std::min(n, src_ptr->size());
+
+        pts_.reserve(pts_.size() + n);
+
+        for (std::size_t i = 0; i < n; ++i) {
+            const Point& p = (*src_ptr)[i];
+            pts_.push_back(p);
+            updateBBox(p);
+        }
+     }
+
+    bool hasBBox() const { return has_bbox_; }
+
+    double minX() const { return min_x_; }
+    double minY() const { return min_y_; }
+    double minZ() const { return min_z_; }
+
+    double maxX() const { return max_x_; }
+    double maxY() const { return max_y_; }
+    double maxZ() const { return max_z_; }
     private:
     std::vector<Point> pts_;
     double time_;
+
+    bool has_bbox_ = false;
+    double min_x_ =  1e30;
+    double min_y_ =  1e30;
+    double min_z_ =  1e30;
+    double max_x_ = -1e30;
+    double max_y_ = -1e30;
+    double max_z_ = -1e30;
+
+    void updateBBox(const Point& p) {
+        if (!has_bbox_) {
+            min_x_ = max_x_ = p.x;
+            min_y_ = max_y_ = p.y;
+            min_z_ = max_z_ = p.z;
+            has_bbox_ = true;
+            return;
+        }
+
+        min_x_ = std::min(min_x_, static_cast<double>(p.x));
+        min_y_ = std::min(min_y_, static_cast<double>(p.y));
+        min_z_ = std::min(min_z_, static_cast<double>(p.z));
+
+        max_x_ = std::max(max_x_, static_cast<double>(p.x));
+        max_y_ = std::max(max_y_, static_cast<double>(p.y));
+        max_z_ = std::max(max_z_, static_cast<double>(p.z));
+    }
+
+    void rebuildBBox() {
+        has_bbox_ = false;
+        min_x_ = min_y_ = min_z_ =  1e30;
+        max_x_ = max_y_ = max_z_ = -1e30;
+
+        for (const auto& p : pts_) {
+            updateBBox(p);
+        }
+    }
 };
 
 class CloudSlice {

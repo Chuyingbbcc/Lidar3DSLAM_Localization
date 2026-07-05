@@ -8,12 +8,13 @@
 
 
 void PointPicker::addPoint(const Vec3d& world_p,
-                           size_t frame_id,
+                           size_t frame_id, size_t submap_id,
                            size_t point_idx_in_frame, size_t layer_id) {
     PickPoint pp;
     pp.world_p_ = world_p;
     pp.layer_id_ = layer_id;
     pp.frame_id_ = frame_id;
+    pp.submap_id_ = submap_id;
     pp.p_idx_in_frame_ = point_idx_in_frame;
 
     if (layer_id == 0) {

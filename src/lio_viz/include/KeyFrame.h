@@ -12,6 +12,7 @@
 #include <queue>
 
 
+
 class KeyFrame {
  public:
    KeyFrame() {
@@ -20,17 +21,21 @@ class KeyFrame {
    KeyFrame(double time, size_t id, const SE3d& lidar_pose, std::shared_ptr<PointCloud> cloud_ptr): time_(time), id_(id), lidar_pose_(lidar_pose), cloud_ptr_(std::move(cloud_ptr)) {};
    double time_;
    size_t id_ =-1;
+   size_t submap_id_ = -1;
+   int loop_role_ = 0; // -1 not loop, 0 i, 1 j
    SE3d lidar_pose_;
    SE3d lidar_pose_neu_;
    SE3d rtk_pose_;
    SE3d fst_opti_pose_;
    SE3d scd_opti_pose_;
+   SE3d loop_opti_pose_;
 
 
    bool rtk_heading_valid_ = false;
    bool rtk_valid_ = true;
    bool rtk_inlier_ = true;
    bool fst_opti_valid_ = false;
+   bool is_loop_closure_ =  false;
    std::string cloud_path_ ="path";
    size_t cloud_size_ = 0;
    std::shared_ptr<PointCloud> cloud_ptr_ =std::make_shared<PointCloud>();
