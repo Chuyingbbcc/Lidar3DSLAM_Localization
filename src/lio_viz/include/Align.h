@@ -43,6 +43,12 @@ struct IncNDTOptions {
 
 };
 
+struct NdtEval {
+   double score_ = std::numeric_limits<double>::infinity();
+   int valid_count_ = 0;
+   double valid_ratio_ = 0.0;
+};
+
 class IncNDT final: public RegistrationBase {
 public:
     IncNDT();
@@ -52,7 +58,7 @@ public:
     bool Align(SE3d & init_pose) override;
     void SetSourceCloud(std::shared_ptr<PointCloud>& source) override;
     void AddCloud(std::shared_ptr<PointCloud>& target) override;
-    double computeScore(const SE3d& pose) const;
+    NdtEval computeScore(const SE3d& pose) const;
 
   private:
     bool first_scan_processed = true;
@@ -69,9 +75,6 @@ public:
 
     void GenerateNearbyGrids();
     void UpdateVoxel(VoxelData& voxel_data);
-
-
-
 
 };
 

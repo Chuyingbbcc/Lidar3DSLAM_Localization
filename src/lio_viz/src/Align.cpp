@@ -254,10 +254,12 @@ void IncNDT::GenerateNearbyGrids() {
 }
 
 
-double IncNDT::computeScore(const SE3d& pose) const {
+NdtEval IncNDT::computeScore(const SE3d& pose) const {
   if (!source_ptr_ || source_ptr_->empty()) {
-    return std::numeric_limits<double>::infinity();
+    return {std::numeric_limits<double>::infinity(), 0 ,0.0};
   }
+
+  NdtEval out;
   double total_score = 0.0;
   int valid_count =0;
 
@@ -291,9 +293,13 @@ double IncNDT::computeScore(const SE3d& pose) const {
     total_score += chi2;
     valid_count++;
   }
+
   if (valid_count < 30) {
     std::cout<< "there are no enough points!"<<std::endl;
-    return std::numeric_limits<double>::infinity();
+    return out;
   }
-  return total_score / static_cast<double>(valid_count);
+  out.valid_count_ = valid_count;
+  out.valid_ratio_ = double(valid_count) / double(source_ptr_->size());
+  out.score_ = total_score / static_cast<double>(valid_count);
+  return out;
 }
