@@ -12,6 +12,8 @@
 #include <ostream>
 #include <fstream>
 
+#include "../include/DataType.h"
+
 IncNDTOdometry::IncNDTOdometry(const LidarOdometry::LoOption& op): LidarOdometry(op) {
   inc_ndt_ = std::make_shared<IncNDT>(op.inc_opt_);
 }
@@ -33,6 +35,8 @@ size_t IncNDTOdometry::AddCloud(std::shared_ptr<PointCloud>& pointcloud, SE3d& p
     key_frame_idx_++;
     return key_frame_idx_;
   }
+  std::cout<<"----------------------------------------------"<<std::endl;
+  std::cout<<"Frame Id: " <<  cnt_frame_ <<std::endl;
   auto isReasonableDelta = [&](SE3d& delta)->bool {
     double trans_dist = delta.translation().norm();
     double rot_angle = delta.so3().log().norm();
@@ -41,17 +45,28 @@ size_t IncNDTOdometry::AddCloud(std::shared_ptr<PointCloud>& pointcloud, SE3d& p
     const double max_rot   = 0.17;
     // radians per frame (~20 deg)
     if (trans_dist > max_trans || rot_angle > max_rot) {
-      std::cout<<cnt_frame_<<"th frame \n";
-      std::cout<<rot_angle<<" angle\n";
-      std::cout<<trans_dist<<" trans dist\n";
+      // std::cout<<cnt_frame_<<"th frame \n";
+      // std::cout<<rot_angle<<" angle\n";
+      // std::cout<<trans_dist<<" trans dist\n";
     }
-
     return trans_dist < max_trans && rot_angle < max_rot;
   };
   auto yawDeg = [](const SE3d& T) -> double {
     return std::atan2(
         T.rotationMatrix()(1, 0),
         T.rotationMatrix()(0, 0)) * 180.0 / M_PI;
+  };
+  auto isValidPredict= [&](const SE3d& predict, const SE3d& delta)-> bool {
+    SE3d T_p_d = predict.inverse() * delta;
+    Vec3d dt = T_p_d.translation();
+    double dxy = std::sqrt(dt.x() * dt.x() + dt.y() * dt.y());
+    double dyaw = abs(yawDeg(T_p_d));
+    //Todo:: put these value to config
+    if (dxy >= 1.0 || dyaw >= 0.3) {
+      std::cout<<"input predict invalid!"<<std::endl;
+      return false;
+    }
+    return true;
   };
 
   auto printDelta = [&](const std::string& tag,
@@ -75,13 +90,10 @@ size_t IncNDTOdometry::AddCloud(std::shared_ptr<PointCloud>& pointcloud, SE3d& p
               << before.translation().transpose() << "\n"
               << "  after  t = "
               << after.translation().transpose() << "\n"
-              << "  dxyz     = "
-              << dt.transpose() << "\n"
               << "  dxy      = " << dxy << " m\n"
               << "  dz       = " << dz << " m\n"
               << "  trans    = " << trans << " m\n"
               << "  yaw      = " << yaw << " deg\n"
-              << "  rot3d    = " << rot3d << " deg\n"
               << "----------------------------------"
               << std::endl;
   };
@@ -94,19 +106,26 @@ size_t IncNDTOdometry::AddCloud(std::shared_ptr<PointCloud>& pointcloud, SE3d& p
     //printDelta("align correction", guess_before_align, guess);
   }
   else{
-    if (use_guess) {
-      SE3d t1 = estimated_vec_[estimated_vec_.size()-1];
-      SE3d t2 = estimated_vec_[estimated_vec_.size()-2];
-      SE3d delta = t2.inverse() * t1; // t2 * delta -> t1
+    SE3d t1 = estimated_vec_[estimated_vec_.size()-1];
+    SE3d t2 = estimated_vec_[estimated_vec_.size()-2];
+    SE3d delta = t2.inverse() * t1; // t2 * delta -> t1
+    SE3d init_guess = t1* delta;
+    //check if delta and input predict pose
+    bool pose_valid = isValidPredict(init_guess, pose);
+    if (use_guess || !pose_valid) {
       isReasonableDelta(delta);
-      guess = t1* delta;
+      guess = init_guess;
     }else {
       guess = pose;
     }
     SE3d guess_before_align = guess;
     inc_ndt_->Align(guess);
-    //printDelta("align correction", guess_before_align, guess);
+    std::string use_guess_str =  use_guess? "true": "false";
+    std::cout<< "Use Guess: " << use_guess_str << std::endl;
+    printDelta("aligned vs delta", init_guess, guess);
+    printDelta("prediction vs delta", pose, guess);
   }
+  //print the prediction pr delta
   pose = guess;
   bool valid =true;
   if (estimated_vec_.size() >0) {
@@ -114,20 +133,31 @@ size_t IncNDTOdometry::AddCloud(std::shared_ptr<PointCloud>& pointcloud, SE3d& p
     valid = isReasonableDelta(dT);
     if(!valid ) {
       std::cout<< cnt_frame_ << " not reasonable!" <<std::endl;
+      // if (estimated_vec_.size() >2) {
+      //   //use delta
+      //   SE3d t1 = estimated_vec_[estimated_vec_.size()-1];
+      //   SE3d t2 = estimated_vec_[estimated_vec_.size()-2];
+      //   SE3d delta = t2.inverse() * t1; // t2 * delta -> t1
+      //   pose = t1* delta;
+      // }
     }
   }
 
   //transform cur frame
     estimated_vec_.emplace_back(pose);
+
+    //inc_ndt_->AddCloud(pointcloud);
+  if(IsKeyFrame(pose)) {
     transformCloud(pointcloud, pose);
     inc_ndt_->AddCloud(pointcloud);
-  if(IsKeyFrame(pose)) {
     last_pose_ = pose;
     cnt_frame_++;
     key_frame_idx_++;
     return key_frame_idx_;
+    std::cout<<"kf id: " <<key_frame_idx_<<std::endl;
   }
   cnt_frame_++;
+  //std::cout<<"----------------------------------------------"<<std::endl;
   return 0;
 }
 

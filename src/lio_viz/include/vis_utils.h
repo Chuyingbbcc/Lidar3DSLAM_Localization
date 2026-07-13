@@ -8,6 +8,7 @@
 struct PickPoint {
     Vec3d world_p_;
     size_t frame_id_ = -1;
+    size_t submap_id_ = -1;
     size_t layer_id_ = -1;
     size_t p_idx_in_frame_ = -1;
 
@@ -18,7 +19,7 @@ public:
     PointPicker() =default;
     ~PointPicker() = default;
     void addPoint(const Vec3d& world_p,
-                  size_t frame_id,
+                  size_t frame_id, size_t submap_id,
                   size_t point_idx_in_frame, size_t layer_id);
     void clear();
     void build();

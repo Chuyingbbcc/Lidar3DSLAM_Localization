@@ -74,6 +74,14 @@ std::string init_path  = "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/
 frontend_ptr_ = std::make_unique<Frontend>(init_path);
 //run frontend
 
+//pause/resume control
+loop_check_pub_ = create_publisher<std_msgs::msg::Empty>(
+            "/loop_closure/check_result", 1);
+loop_resume_sub_ = create_subscription<std_msgs::msg::Empty>(
+            "/loop_closure/resume",
+            1, std::bind( &MappingNode::onLoopResume, this,
+                std::placeholders::_1));
+
 if (mode_  == "mapping") {
   writeVisualizationConfig(init_path, MapMode::frontend);
   slam_thread_ = std::thread([this]() {
@@ -105,13 +113,21 @@ if (mode_ == "roptimization") {
 }
 
 else if (mode_ == "optimization") {
- Backend backend = Backend(init_path);
- backend.buildSubmaps();
- backend.neuAlign();
- backend.runLevel1Optimization();
- //backend.runLevel2Optimization();
- const std::string kf_path = "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/output_temp/kf_output.txt";
- writeKeyFramesToFile(kf_path, backend.getKeyFrames());
+    writeVisualizationConfig(init_path, MapMode::optimization);
+    optimization_thread_ = std::thread([this,init_path]() {runOptimizationMode(init_path);});
+ // Backend backend = Backend(init_path);
+ // backend.buildSubmaps();
+ // //backend.neuAlign();
+ // //update kf fst_opti_pose_
+ // backend.runKfRtkOptimization();
+ // //update kf scd_opti_pose_
+ // //backend.runSubmapInsideOptimization();
+ // //update kf loop_opti_pose_, sm T_w_s_opti_
+ // backend.runLoopClosure();
+ // //test loop closure
+ // const std::string kf_path = "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/output_temp/kf_output.txt";
+ // writeKeyFramesToFile(kf_path, backend.getKeyFrames());
+ // std::cout<<"finish here"<<std::endl;
  //load key frames
  //std::map<size_t, std::shared_ptr<KeyFrame>>kf_map;
 
@@ -215,16 +231,19 @@ MappingNode::~MappingNode() {
     slam_thread_.join();
     RCLCPP_INFO(this->get_logger(), "Slam thread joined");
   }
+  if (optimization_thread_.joinable()) {
+    optimization_thread_.join();
+  }
 
   RCLCPP_INFO(this->get_logger(), "Destructor done");
 }
 
 void MappingNode::publish_frame() {
   std::shared_ptr<KeyFrame>nxt_kf_ptr = nullptr;
-  if (mode_ == "optimization") {
-    return;
-  }
-  else if (mode_ == "mapping") {
+  // if (mode_ == "optimization") {
+  //   return;
+  // }
+  if (mode_ == "mapping") {
     nxt_kf_ptr = frontend_ptr_->takeNextKeyFrame();
  }
  else {
@@ -241,7 +260,11 @@ void MappingNode::publish_frame() {
   msg.header.frame_id = "map";
 
   msg.frame_id = nxt_kf_ptr->id_;              // change to your real field
-  msg.cloud_path = nxt_kf_ptr->cloud_path_;    // change to your real field
+  msg.submap_id = nxt_kf_ptr->submap_id_;
+  msg.loop_role = nxt_kf_ptr->loop_role_;
+  //std::cout<< "submap id: "<< msg.submap_id <<std::endl;
+  msg.cloud_path = nxt_kf_ptr->cloud_path_;
+  msg.is_loop_closure = nxt_kf_ptr->is_loop_closure_;  // change to your real field
 
   auto se3ToMsgPose= [](const SE3d& T, geometry_msgs::msg::Pose& pose)->void{
     const Vec3d t =
@@ -267,11 +290,13 @@ void MappingNode::publish_frame() {
    se3ToMsgPose(nxt_kf_ptr->rtk_pose_, msg.rtk_pose);
    se3ToMsgPose(nxt_kf_ptr->fst_opti_pose_, msg.fst_optimization_pose);
    se3ToMsgPose(nxt_kf_ptr->scd_opti_pose_, msg.scd_optimization_pose);
+   se3ToMsgPose(nxt_kf_ptr->loop_opti_pose_, msg.loop_optimization_pose);
    frame_pub_->publish(msg);
 }
 
 void MappingNode::stop_and_save() {
-    if (frontend_ptr_) {
+    if (frontend_ptr_ && mode_ == "mapping") {
+        std::cout<< "stop mapping mode!"<<std::endl;
         frontend_ptr_->requestStopAndSave();
     }
 }
@@ -343,12 +368,21 @@ void MappingNode::writeVisualizationConfig(
     }
     else if (mode == MapMode::replay_optimization) {
         setLayer(cfg["vis"]["layer1"], false, true,
-                 "rtk", "rtk",
-                 {1, 1, 1}, {1, 0, 0});
+                 "fst_optimization", "rtk",
+                 {1, 0, 1}, {1, 0, 0});
 
         setLayer(cfg["vis"]["layer2"], true, true,
-                 "fst_optimization", "fst_optimization",
-                 {1, 1, 1}, {0, 1, 0});
+                 "scd_optimization", "scd_optimization",
+                 {1,1 , 1}, {0, 1, 0});
+    }
+    else if (mode == MapMode::optimization) {
+        setLayer(cfg["vis"]["layer1"], false, true,
+                 "loop_optimization", "rtk",
+                 {1, 0, 1}, {1, 0, 0});
+
+        setLayer(cfg["vis"]["layer2"], true, true,
+                 "loop_optimization", "loop_optimization",
+                 {1,1 , 1}, {0, 1, 0});
     }
     else {
         RCLCPP_ERROR(
@@ -378,20 +412,70 @@ void MappingNode::writeVisualizationConfig(
         "Wrote visualization config: %s",
         config_path.c_str());
 }
+void MappingNode::onLoopResume(
+    const std_msgs::msg::Empty::SharedPtr)
+{
+    {
+        std::lock_guard<std::mutex> lock(loop_pause_mutex_);
+        loop_resume_requested_ = true;
+    }
+
+    loop_pause_cv_.notify_one();
+}
+
+void MappingNode::pauseForLoopInspection()
+{
+    {
+        std::lock_guard<std::mutex> lock(loop_pause_mutex_);
+        loop_resume_requested_ = false;
+    }
+
+    std::unique_lock<std::mutex> lk(loop_pause_mutex_);
+    std::cout<<"resume loop!"<<std::endl;
+    loop_pause_cv_.wait(lk, [&]() {
+        return loop_resume_requested_ || !rclcpp::ok();
+    });
+}
+void MappingNode::runOptimizationMode(const std::string& init_path) {
+    Backend backend(init_path);
+    backend.buildSubmaps();
+    //backend.neuAlign();
+    backend.runKfRtkOptimization();
+    //backend.runCorrectNdt();
+    //send call back to run LoopClosure
+     backend.runKfLoopClosureLocalToGlobal(
+       [this, &backend](int cnt) {
+          std::cout<<"running callback!"<<std::endl;
+          loop_check_pub_->publish(std_msgs::msg::Empty());
+           //publishAllKeyFramesForVis(backend.getKeyFrames());
+           std::queue<std::shared_ptr<KeyFrame>>().swap(replay_kf_q_);
+           auto& key_frames = backend.getKeyFrames();
+           int x = 0;
+           for (auto& it: key_frames) {
+               if (x>cnt)break;
+               replay_kf_q_.push(it.second);
+               x++;
+           }
+           pauseForLoopInspection();
+       }
+    );
+    const std::string kf_path = "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/output_temp/kf_output.txt";
+    writeKeyFramesToFile(kf_path, backend.getKeyFrames());
+}
 
 
 int main(int argc, char **argv) {
   rclcpp::init(argc, argv);
-    std::signal(SIGINT, signalHandler);   // Ctrl+C
-    std::signal(SIGTERM, signalHandler);  // kill PID
-    std::signal(SIGTSTP, signalHandler);  // Ctrl+Z
+    // std::signal(SIGINT, signalHandler);   // Ctrl+C
+    // std::signal(SIGTERM, signalHandler);  // kill PID
+    // std::signal(SIGTSTP, signalHandler);  // Ctrl+Z
     auto node = std::make_shared<MappingNode>();
 
     rclcpp::spin(node);
 
     std::cout << "[main] spin exited, saving KFs...\n";
 
-    node->stop_and_save();
+    //node->stop_and_save();
 
     node.reset();
 

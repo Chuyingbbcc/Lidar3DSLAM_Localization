@@ -30,13 +30,14 @@ void KeyFrame::write(std::ostream &os) {
         //std::cout<<"write: "<<t[0] << " " << t[1] << " " << t[2] <<std::endl;
         ss << t[0] <<" "<< t[1]<<" "<<t[2] << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << " ";
     };
-    os<< id_ << " "<< cloud_path_<< std::setprecision(18)<<" "<< time_ <<" "<<rtk_heading_valid_<<" "<<rtk_valid_ << " "
-       << rtk_inlier_ << " ";
+    os<< id_ << " "<< submap_id_<<" "<<loop_role_<<" "<<cloud_path_<< std::setprecision(18)<<" "<< time_ <<" "<<rtk_heading_valid_<<" "<<rtk_valid_ << " "
+       << rtk_inlier_ << " "<<is_loop_closure_<<" ";
     saveSE3(os, lidar_pose_);
     saveSE3(os, lidar_pose_neu_);
     saveSE3(os, rtk_pose_);
     saveSE3(os, fst_opti_pose_);
     saveSE3(os, scd_opti_pose_);
+    saveSE3( os, loop_opti_pose_);
     os<<std::endl;
 }
 
@@ -52,12 +53,13 @@ void KeyFrame::read(std::istream &is) {
      Vec3d t(out[0], out[1], out[2]);
      return SE3d(q, t);
    };
-   is>> id_ >>  cloud_path_>> time_ >> rtk_heading_valid_>>rtk_valid_>>rtk_inlier_;
+   is>> id_ >> submap_id_>> loop_role_>> cloud_path_>> time_ >> rtk_heading_valid_>>rtk_valid_>>rtk_inlier_>>is_loop_closure_;
    lidar_pose_ = load_SE3(is);
    lidar_pose_neu_ = load_SE3(is);
    rtk_pose_ = load_SE3(is);
    fst_opti_pose_ = load_SE3(is);
    scd_opti_pose_ = load_SE3(is);
+   loop_opti_pose_ = load_SE3(is);
 }
 
 void writeKeyFramesToFile(const std::string &path, const std::map<size_t,std::shared_ptr<KeyFrame>>& kf_map) {

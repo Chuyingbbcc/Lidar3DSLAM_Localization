@@ -71,8 +71,7 @@ void LioPipe::postProcess() {
     std::shared_ptr<PointCloud> scan;
     // SO3f last_Pose = SO3f();
     while (reorder_.waitPopOrdered(scan)) {
-
-        std::cout<<"pop out" << num_frames_ << " th lidar"<< std::endl;
+        //std::cout<<"pop out" << num_frames_ << " th lidar"<< std::endl;
         if (!running_.load()) break;
         double t1 =  scan->get_time();
         if (t1 < last_t1) {
@@ -86,6 +85,11 @@ void LioPipe::postProcess() {
         }
         std::vector<ImuData> imu_vec ={};
         imu_buffer_.extract(imu_vec, t1- 0.1, t1);
+        bool enough_prediction = true;
+        if (imu_vec.size() <5 ) {
+            enough_prediction =false;
+           std::cerr << "imu not enough!!" << std::endl;
+        }
         // for(auto& imu : imu_vec) {
         //     if(imu.t <t1-0.1 || imu.t>t1){
         //         std::cerr<< "Imu time invalid! " <<imu.t << "\n";
@@ -100,6 +104,7 @@ void LioPipe::postProcess() {
             kf_idx = lo_.AddCloud(scan,cur_pose, true);
         }
         else {
+           bool use_guess = !enough_prediction;
            kf_idx = lo_.AddCloud(scan, cur_pose, false);
         }
         if(kf_idx == -1 ){

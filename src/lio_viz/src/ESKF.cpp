@@ -111,8 +111,8 @@ void ESKF::BuildNoise() {
     double pn = options_.pos_noise_;
     double hn = options_.height_noise_;
     double an = options_.ang_noise_;
-    //std::cout<<"lidar_pos_noise:<<"<<pn<<std::endl;
-    //std::cout<<"height_noise_:<<"<<hn<<std::endl;
+    std::cout<<"lidar_pos_noise:<<"<<pn<<std::endl;
+    std::cout<<"height_noise_:<<"<<hn<<std::endl;
     lidar_noise_.diagonal()<<pn, pn, hn,an, an,an;
 }
 
@@ -126,7 +126,9 @@ void ESKF::UpdateAndReset() {
 
 
    g_ += dx_.template block<3,1>(15,0);
-   std::cout<< "g: " << g_[0]<< g_[1]<<g_[2]<<std::endl;
+   // std::cout<< "g: " << g_[0]<< g_[1]<<g_[2]<<std::endl;
+   // std::cout<< "ba:" << ba_[0]<<ba_[1]<<ba_[2]<<std::endl;
+   // std::cout<< "bg:" << bg_[0]<<bg_[1]<<bg_[2]<<std::endl;
 
    Mat18d J = Mat18d::Identity();
    J.template block<3,3>(6,6) = Mat3d::Identity() -0.5*SO3d::hat(dx_.template block<3,1>(6,0));

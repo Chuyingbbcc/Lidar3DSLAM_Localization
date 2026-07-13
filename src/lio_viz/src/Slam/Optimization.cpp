@@ -39,12 +39,19 @@ class EdgeSE3GPS: public g2o::BaseUnaryEdge<3, Vec3d, g2o::VertexSE3> {
     bool write(std::ostream&) const override { return false; }
 };
 
-PoseGraphOptimizer::PoseGraphOptimizer()= default;
+PoseGraphOptimizer::PoseGraphOptimizer(OptimizationStage stage): stage_(stage) {
+}
+
 
 PoseGraphOptimizer::~PoseGraphOptimizer()=default;
 
 void PoseGraphOptimizer::setNodes(const std::vector<Node> &nodes) {
     nodes_ = nodes;
+}
+
+void PoseGraphOptimizer::setEdges(const std::vector<Edge>& edges)
+{
+    edges_ = edges;
 }
 
 bool PoseGraphOptimizer::optimize(int iterations) {
@@ -55,9 +62,8 @@ bool PoseGraphOptimizer::optimize(int iterations) {
         return false;
     }
     addVertices();
-    addOdomEdges();
+    addRelativeEdges();
     addGpsEdges();
-
     optimizer_ ->initializeOptimization();
     int iters = optimizer_ -> optimize(iterations);
     return iters >0;
@@ -164,14 +170,42 @@ void PoseGraphOptimizer::addOdomEdges() {
     }
 }
 
+
+void PoseGraphOptimizer::addRelativeEdges() {
+    if (!optimizer_) {
+        return;
+    }
+    for (const auto& e: edges_) {
+        auto* edge = new g2o::EdgeSE3();
+
+        edge->setVertex(
+            0,
+            optimizer_->vertex(static_cast<int>(e.id_i_)));
+
+        edge->setVertex(
+            1,
+            optimizer_->vertex(static_cast<int>(e.id_j_)));
+
+        edge->setMeasurement(
+            Eigen::Isometry3d(e.T_i_j_.matrix()));
+
+        edge->setInformation(e.info_);
+
+        auto* rk = new g2o::RobustKernelHuber();
+        rk->setDelta(stage_ == OptimizationStage::LOOP_CLOSURE ? 1.0 : 2.0);
+        edge->setRobustKernel(rk);
+        optimizer_->addEdge(edge);
+    }
+}
+void PoseGraphOptimizer::setGpsInfo(Mat3d& gps_info) {
+   gps_info_(0,0) =gps_info(0,0);
+   gps_info_(1,1) =gps_info(1,1);
+   gps_info_(2,2) =gps_info(2,2);
+}
 void PoseGraphOptimizer::addGpsEdges() {
     if (!optimizer_) {
        return;
     }
-    Eigen::Matrix3d gps_info = Eigen::Matrix3d::Zero();
-    gps_info(0,0) = 0.001;
-    gps_info(1,1) = 0.001;
-    gps_info(2,2) = 100.0;
     for(size_t i=0; i<nodes_.size(); ++i) {
        const auto& node = nodes_[i];
        if(!node.has_gps_) {
@@ -180,7 +214,7 @@ void PoseGraphOptimizer::addGpsEdges() {
        auto* edge = new EdgeSE3GPS();
        edge->setVertex(0, optimizer_->vertex(static_cast<int>(node.id_)));
        edge->setMeasurement(node.gps_pos_);
-        edge->setInformation(gps_info);
+        edge->setInformation(gps_info_);
 
         auto* rk = new g2o::RobustKernelHuber();
         rk->setDelta(2.0);

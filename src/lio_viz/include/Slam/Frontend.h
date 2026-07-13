@@ -71,7 +71,7 @@ class Frontend {
     bool has_new_kf = false;
 
     size_t lidar_count_ = 0;
-    size_t max_lidar_count_ = 2000;
+    size_t max_lidar_count_ = 4000;
 };
 
 
