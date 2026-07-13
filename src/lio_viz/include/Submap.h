@@ -10,8 +10,9 @@
 #include <cmath>
 #include  "KeyFrame.h"
 
+constexpr size_t INVALID_ID = std::numeric_limits<size_t>::max();
 struct Submap {
-   size_t id_= 0;
+   size_t id_= INVALID_ID;
 
    size_t start_kf_id_ =0;
    size_t end_kf_id_ =0;

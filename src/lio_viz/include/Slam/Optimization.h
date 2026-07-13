@@ -37,6 +37,7 @@ public:
     ~PoseGraphOptimizer();
     void setNodes(const std::vector<Node>& nodes);
     void setEdges(const std::vector<Edge>& edges);
+    void setGpsInfo(Mat3d& gps_info);
     bool optimize(int iterations = 20);
     void getOptimizedPoses(std::map<size_t,SE3d >& poses_map);
 private:
@@ -46,11 +47,14 @@ private:
     std::unique_ptr<g2o::SparseOptimizer> optimizer_;
     OptimizationStage stage_;
 
+    Mat3d gps_info_;
+
     bool buildOptimizer();
     void addVertices();
     void addRelativeEdges();
     void addOdomEdges();
     void addGpsEdges();
+
 };
 
 

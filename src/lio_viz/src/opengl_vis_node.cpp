@@ -7,6 +7,7 @@
 #include "../include/opengl_vis_node.h"
 
 
+
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -77,6 +78,18 @@ OpenGLPointCloudNode::OpenGLPointCloudNode()
     RCLCPP_INFO(this->get_logger(), "Visualization node started. Waiting for pcd_path messages...");
     point_picker_.clear();
 
+    loop_check_sub_ =
+    this->create_subscription<std_msgs::msg::Empty>(
+        "/loop_closure/check_result",
+        1,
+        std::bind(
+            &OpenGLPointCloudNode::onLoopCheckResult,
+            this,
+            std::placeholders::_1));
+
+    loop_resume_pub_ =
+    this->create_publisher<std_msgs::msg::Empty>(
+        "/loop_closure/resume", 1);
 }
 
 OpenGLPointCloudNode::~OpenGLPointCloudNode() {
@@ -143,7 +156,7 @@ bool OpenGLPointCloudNode::init_window() {
     glfwSetScrollCallback(window_, &OpenGLPointCloudNode::scroll_callback);
     glfwSetMouseButtonCallback(window_, &OpenGLPointCloudNode::mouse_button_callback);
     glfwSetCursorPosCallback(window_, &OpenGLPointCloudNode::cursor_pos_callback);
-
+    glfwSetKeyCallback( window_, &OpenGLPointCloudNode::key_callback);
     if (!init_gl_resources()) {
         RCLCPP_ERROR(this->get_logger(), "Failed to init GL resources");
         return false;
@@ -175,6 +188,9 @@ bool OpenGLPointCloudNode::init_gl_resources() {
  out vec4 FragColor;
 
  void main(){
+   if(v_intensity == 0.0){
+      FragColor = vec4(u_color, 1.0);
+   }
    if (v_intensity >0 && v_intensity < 1.5) {
       FragColor = vec4(1.0, 0.0, 0.0, 1.0); // loop i
    }
@@ -182,7 +198,7 @@ bool OpenGLPointCloudNode::init_gl_resources() {
       FragColor = vec4(0.0, 1.0, 0.0, 1.0); // loop j
    }
    else {
-      discard;
+      FragColor = vec4(u_color, 1.0);
    }
  }
 )";
@@ -1171,6 +1187,93 @@ screenRay(double mouse_x, double mouse_y, glm::vec3 &ray_o, glm::vec3 &ray_dir) 
    return true;
 }
 
+void OpenGLPointCloudNode::clearVisualization() {
+    pending_frames_.clear();
+
+    map_points_1_.clear();
+    map_points_2_.clear();
+
+    route_points_1_.clear();
+    route_points_2_.clear();
+
+    point_picker_.clear();
+
+    map_min_x_ = map_min_y_ = map_min_z_ =
+        std::numeric_limits<float>::max();
+
+    map_max_x_ = map_max_y_ = map_max_z_ =
+        std::numeric_limits<float>::lowest();
+
+    vbo_ready_1_ = false;
+    vbo_ready_2_ = false;
+
+    route_vbo_ready_1_ = false;
+    route_vbo_ready_2_ = false;
+
+    num_points_gpu_1_ = 0;
+    num_points_gpu_2_ = 0;
+
+    num_route_points_1_ = 0;
+    num_route_points_2_ = 0;
+
+    gpu_dirty_1_ = true;
+    gpu_dirty_2_ = true;
+
+    route_gpu_dirty_1_ = true;
+    route_gpu_dirty_2_ = true;
+
+    auto_fit_pending_ = true;
+}
+
+void OpenGLPointCloudNode::onLoopCheckResult(
+    const std_msgs::msg::Empty::SharedPtr)
+{
+    //vis node receive the sig from map, then clear vis, render again
+    clearVisualization();
+
+    loop_inspection_mode_ = true;
+
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Loop optimization finished. Restart visualization.");
+}
+
+void OpenGLPointCloudNode::publishLoopResume()
+{
+    loop_resume_pub_->publish(std_msgs::msg::Empty());
+
+    loop_inspection_mode_ = false;
+
+    RCLCPP_INFO(
+        this->get_logger(),
+        "Resume loop closure optimization.");
+}
+
+void OpenGLPointCloudNode::key_callback(
+    GLFWwindow* window,
+    int key,
+    int scancode,
+    int action,
+    int mods)
+{
+    (void)scancode;
+    (void)mods;
+
+    auto* self =
+        static_cast<OpenGLPointCloudNode*>(
+            glfwGetWindowUserPointer(window));
+
+    if (!self) {
+        return;
+    }
+    if (action == GLFW_PRESS &&
+      key == GLFW_KEY_L &&
+      (mods & GLFW_MOD_CONTROL)){
+        if (self->loop_inspection_mode_) {
+            self->publishLoopResume();
+        }
+    }
+}
 
 int main(int argc , char **argv) {
  rclcpp::init(argc, argv);

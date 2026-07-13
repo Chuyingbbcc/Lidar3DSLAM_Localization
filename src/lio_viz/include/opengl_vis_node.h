@@ -5,6 +5,7 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <std_msgs/msg/empty.hpp>
 #include <lio_msgs/msg/frame_data.hpp>
 #include <geometry_msgs/msg/pose.hpp>
 #include "glad.h"
@@ -102,9 +103,10 @@ private:
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr sub_;
     rclcpp::Subscription<lio_msgs::msg::FrameData>::SharedPtr frame_sub_;
 
-    //Todo: might delete later
-    // std::vector<PointVertex> points_;
-    // bool have_points_{false};
+    rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr loop_check_sub_;
+    rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr loop_resume_pub_;
+
+    bool loop_inspection_mode_{false};
 
     bool initialized_ = false;
     RenderLayerConfig layer1_;
@@ -240,6 +242,19 @@ private:
     bool loadVisNodeConfig(const std::string& path);
     void loadLayerConfig(const YAML::Node& node, RenderLayerConfig& layer);
     PoseType parsePoseType(const std::string& s);
+
+    //loop control
+    void onLoopCheckResult(const std_msgs::msg::Empty::SharedPtr msg);
+    void clearVisualization();
+    static void key_callback(
+        GLFWwindow* window,
+        int key,
+        int scancode,
+        int action,
+        int mods);
+
+    void publishLoopResume();
+
 };
 
 
