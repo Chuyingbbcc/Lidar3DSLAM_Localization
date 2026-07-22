@@ -370,10 +370,9 @@ inline bool pc2ToPointCloudXYZIT(
                 continue;
             }
 
-            if (z < -1 || x < -40 || x > 40 || y < -40 || y > 40 || z>5) {
+            if (z < -0.6|| x < 0.5 || x > 30 || y < -30 || y > 30) {
                 continue;
             }
-
             float intensity = 0.f;
             if (has_intensity) {
                 const auto& fi = itI->second;
@@ -427,11 +426,11 @@ inline bool pc2ToPointCloudXYZIT(
             continue;
         }
 
-        if (z < -1 || x < -40 || x > 40 || y < -40 || y > 40 || z>5) {
+        if (z < -0.6|| x < 0.5 || x > 30 || y < -30 || y > 30) {
             continue;
         }
-
         float intensity = 0.f;
+
         if (has_intensity) {
             const auto& fi = itI->second;
             switch (fi.datatype) {

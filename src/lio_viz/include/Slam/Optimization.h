@@ -47,7 +47,7 @@ private:
     std::unique_ptr<g2o::SparseOptimizer> optimizer_;
     OptimizationStage stage_;
 
-    Mat3d gps_info_;
+    Mat3d gps_info_ = Mat3d::Zero();
 
     bool buildOptimizer();
     void addVertices();

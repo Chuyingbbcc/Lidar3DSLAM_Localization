@@ -35,8 +35,8 @@ size_t IncNDTOdometry::AddCloud(std::shared_ptr<PointCloud>& pointcloud, SE3d& p
     key_frame_idx_++;
     return key_frame_idx_;
   }
-  std::cout<<"----------------------------------------------"<<std::endl;
-  std::cout<<"Frame Id: " <<  cnt_frame_ <<std::endl;
+  //std::cout<<"----------------------------------------------"<<std::endl;
+  //std::cout<<"Frame Id: " <<  cnt_frame_ <<std::endl;
   auto isReasonableDelta = [&](SE3d& delta)->bool {
     double trans_dist = delta.translation().norm();
     double rot_angle = delta.so3().log().norm();
@@ -63,7 +63,7 @@ size_t IncNDTOdometry::AddCloud(std::shared_ptr<PointCloud>& pointcloud, SE3d& p
     double dyaw = abs(yawDeg(T_p_d));
     //Todo:: put these value to config
     if (dxy >= 1.0 || dyaw >= 0.3) {
-      std::cout<<"input predict invalid!"<<std::endl;
+      //std::cout<<"input predict invalid!"<<std::endl;
       return false;
     }
     return true;
@@ -157,7 +157,7 @@ size_t IncNDTOdometry::AddCloud(std::shared_ptr<PointCloud>& pointcloud, SE3d& p
     std::cout<<"kf id: " <<key_frame_idx_<<std::endl;
   }
   cnt_frame_++;
-  //std::cout<<"----------------------------------------------"<<std::endl;
+  std::cout<<"----------------------------------------------"<<std::endl;
   return 0;
 }
 

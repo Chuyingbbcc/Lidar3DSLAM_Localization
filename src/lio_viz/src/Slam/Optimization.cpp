@@ -198,9 +198,7 @@ void PoseGraphOptimizer::addRelativeEdges() {
     }
 }
 void PoseGraphOptimizer::setGpsInfo(Mat3d& gps_info) {
-   gps_info_(0,0) =gps_info(0,0);
-   gps_info_(1,1) =gps_info(1,1);
-   gps_info_(2,2) =gps_info(2,2);
+   gps_info_ = gps_info;
 }
 void PoseGraphOptimizer::addGpsEdges() {
     if (!optimizer_) {
@@ -217,7 +215,7 @@ void PoseGraphOptimizer::addGpsEdges() {
         edge->setInformation(gps_info_);
 
         auto* rk = new g2o::RobustKernelHuber();
-        rk->setDelta(2.0);
+        rk->setDelta(10.0);
         edge->setRobustKernel(rk);
 
         optimizer_->addEdge(edge);

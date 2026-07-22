@@ -37,7 +37,8 @@ enum class  PoseType {
    LIDAR_NEU,
    FST_OPTIMIZATION,
    SCD_OPTIMIZATION,
-   LOOP_OPTIMIZATION
+   LOOP_OPTIMIZATION,
+   LOOP_NDT,
 };
 
 struct PendingFrame {
@@ -53,12 +54,14 @@ struct PendingFrame {
    glm::mat4 fst_optimization_pose_ = glm::mat4(1.0f);
    glm::mat4 scd_optimization_pose_ = glm::mat4(1.0f);
    glm::mat4 loop_optimization_pose_ = glm::mat4(1.0f);
+   glm::mat4 loop_ndt_pose_ = glm::mat4(1.0f);
     bool has_lidar_pose_ = true;
     bool has_rtk_pose_ = true;
     bool has_lidar_pose_neu_ = true;
     bool has_fst_optimization_pose_ = true;
     bool has_scd_optimization_pose_ = true;
     bool has_loop_optimization_pose_ = true;
+    bool has_loop_ndt_pose_ = true;
     bool is_loop_closure_ = false;
 };
 

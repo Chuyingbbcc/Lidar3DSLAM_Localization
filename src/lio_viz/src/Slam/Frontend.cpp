@@ -68,7 +68,7 @@ bool Frontend::Run() {
         //
         io_ptr_->onImu([&](const sensor_msgs::msg::Imu& imu_msg, double t_ns) {
            ImuData imu_data;
-           toImuData(imu_data, imu_msg, t_ns);
+           toImuData(imu_data, imu_msg, t_ns,fe_options_.io_options_.acc_scale_, fe_options_.io_options_.gyro_scale_);
            lio_pipe_ptr_->pushImu(imu_data);
         });
         io_ptr_->onLidar([&](const sensor_msgs::msg::PointCloud2& cloud_msg, double t_ns) {
@@ -204,6 +204,14 @@ bool Frontend::loadFrontendConfig() {
         RosIoOffline::IoOptions io_options;
         if (cfg["print_topics"]) {
             io_options.print_topics_ = cfg["print_topics"].as<bool>();
+        }
+
+       if (cfg["acc_scale"]) {
+           io_options.acc_scale_ = cfg["acc_scale"].as<double>();
+       }
+
+        if (cfg["gyro_scale"]) {
+           io_options.gyro_scale_ = cfg["gyro_scale"].as<double>();
         }
 
         // lo_options

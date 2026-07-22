@@ -105,7 +105,7 @@ void LioPipe::postProcess() {
         }
         else {
            bool use_guess = !enough_prediction;
-           kf_idx = lo_.AddCloud(scan, cur_pose, false);
+           kf_idx = lo_.AddCloud(scan, cur_pose, true);
         }
         if(kf_idx == -1 ){
            std::cerr << "Registration failed"<<std::endl;

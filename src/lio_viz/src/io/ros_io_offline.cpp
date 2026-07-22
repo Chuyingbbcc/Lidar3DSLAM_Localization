@@ -36,7 +36,7 @@ namespace rb2_readers = rosbag2_cpp;
 
 
 RosIoOffline::RosIoOffline(IoOptions io_options): io_options_(io_options) {
-
+  bag_path_ = io_options_.bag_folder;
 }
 
 double RosIoOffline::extractTime(const std_msgs::msg::Header& header,
@@ -109,11 +109,78 @@ bool RosIoOffline::go() {
 
   size_t total = 0, pc2_n = 0, imu_n = 0, odom_n = 0, tf_n = 0, gps_n =0;
 
-  while (reader.has_next()) {
-    if (wait_cb_) {
-      wait_cb_();
+  bool has_next = false;
+  while (true){
+    try {
+        has_next = reader.has_next();
     }
-    auto bag_msg = reader.read_next();
+    catch (const std::exception& e) {
+        std::cerr << "[RosIoOffline] has_next() exception: "
+                  << e.what() << std::endl;
+        return false;
+    }
+    catch (...) {
+        std::cerr << "[RosIoOffline] has_next() unknown exception"
+                  << std::endl;
+        return false;
+    }
+
+    if (!has_next) {
+        break;
+    }
+
+    if (wait_cb_) {
+        wait_cb_();
+    }
+
+    std::shared_ptr<rosbag2_storage::SerializedBagMessage> bag_msg;
+
+    try {
+        bag_msg = reader.read_next();
+    }
+    catch (const std::exception& e) {
+        std::cerr << "[RosIoOffline] read_next() exception after "
+                  << total << " messages: "
+                  << e.what() << std::endl;
+        return false;
+    }
+    catch (...) {
+        std::cerr << "[RosIoOffline] read_next() unknown exception after "
+                  << total << " messages"
+                  << std::endl;
+        return false;
+    }
+
+    if (!bag_msg) {
+        std::cerr << "[RosIoOffline] read_next returned nullptr after "
+                  << total << " messages"
+                  << std::endl;
+        return false;
+    }
+
+    if (!bag_msg->serialized_data) {
+        std::cerr << "[RosIoOffline] Null serialized_data on topic "
+                  << bag_msg->topic_name << std::endl;
+        continue;
+    }
+
+    const auto& data = bag_msg->serialized_data;
+
+    if (!data->buffer || data->buffer_length == 0) {
+        std::cerr << "[RosIoOffline] Empty serialized message on topic "
+                  << bag_msg->topic_name << std::endl;
+        continue;
+    }
+
+    if (data->buffer_capacity < data->buffer_length) {
+        std::cerr << "[RosIoOffline] Invalid serialized buffer on topic "
+                  << bag_msg->topic_name
+                  << ", length=" << data->buffer_length
+                  << ", capacity=" << data->buffer_capacity
+                  << std::endl;
+        continue;
+    }
+
     ++total;
      // if(pc2_n >20) {
      //   break;
@@ -126,37 +193,62 @@ bool RosIoOffline::go() {
       continue;
     }
 
-    if (pc2_cb_ && (topic_name == "/kitti/velodyne_points" )) {
-      sensor_msgs::msg::PointCloud2 msg;
-      rclcpp::SerializedMessage serialized(*bag_msg->serialized_data);
-      pc2_ser.deserialize_message(&serialized, &msg);
-      double lidar_msg_t = extractTime(msg.header, bag_msg->time_stamp, last_lidar_time_);
-      ++pc2_n;
-      pc2_cb_(msg, lidar_msg_t);
-      last_lidar_time_ = lidar_msg_t;
-      continue;
+    // if (pc2_cb_ && (topic_name == "/kitti/velodyne_points" )) {
+      if (pc2_cb_ && (topic_name == "/livox/lidar" )) {
+      try {
+        sensor_msgs::msg::PointCloud2 msg;
+        rclcpp::SerializedMessage serialized(*bag_msg->serialized_data);
+        pc2_ser.deserialize_message(&serialized, &msg);
+        double lidar_msg_t = extractTime(msg.header, bag_msg->time_stamp, last_lidar_time_);
+        ++pc2_n;
+        if (pc2_n <200) {
+          continue;
+        }
+        pc2_cb_(msg, lidar_msg_t);
+        last_lidar_time_ = lidar_msg_t;
+        continue;
+      }
+      catch (const std::exception& e) {
+        std::cerr << "Failed to deserialize lidar: "
+                  << e.what() << std::endl;
+        continue;
+      }
     }
 
-    if (imu_cb_ && (topic_name == "/kitti/imu" )) {
-      sensor_msgs::msg::Imu msg;
-      rclcpp::SerializedMessage serialized(*bag_msg->serialized_data);
-      imu_ser.deserialize_message(&serialized, &msg);
-      double imu_msg_t = extractTime(msg.header, bag_msg->time_stamp, last_imu_time_);
-      ++imu_n;
-      imu_cb_(msg, imu_msg_t);
-      last_imu_time_ = imu_msg_t;
-      continue;
+    if (imu_cb_ && (topic_name == "/livox/imu" )) {
+     try {
+       sensor_msgs::msg::Imu msg;
+       rclcpp::SerializedMessage serialized(*bag_msg->serialized_data);
+       imu_ser.deserialize_message(&serialized, &msg);
+       double imu_msg_t = extractTime(msg.header, bag_msg->time_stamp, last_imu_time_);
+       ++imu_n;
+       imu_cb_(msg, imu_msg_t);
+       last_imu_time_ = imu_msg_t;
+       continue;
+     }
+     catch (const std::exception& e) {
+       std::cerr << "Failed to deserialize IMU: "
+              << e.what() << std::endl;
+       continue;
+     }
     }
 
     if(gps_cb_ && (topic_name == "/kitti/gps/fix")) {
-      sensor_msgs::msg::NavSatFix msg;
-      rclcpp::SerializedMessage serialized(*bag_msg->serialized_data);
-      gps_ser.deserialize_message(&serialized, &msg);
-      double gps_msg_t = extractTime(msg.header, bag_msg->time_stamp, last_gps_time_);
-      ++gps_n;
-      gps_cb_(msg, gps_msg_t);
-      last_gps_time_ = gps_msg_t;
-      continue;
+      try {
+        sensor_msgs::msg::NavSatFix msg;
+        rclcpp::SerializedMessage serialized(*bag_msg->serialized_data);
+        gps_ser.deserialize_message(&serialized, &msg);
+        double gps_msg_t = extractTime(msg.header, bag_msg->time_stamp, last_gps_time_);
+        ++gps_n;
+        gps_cb_(msg, gps_msg_t);
+        last_gps_time_ = gps_msg_t;
+        continue;
+      }
+      catch (const std::exception& e) {
+        std::cerr << "Failed to deserialize gps: "
+             << e.what() << std::endl;
+        continue;
+      }
     }
 
     // // If you don't have odom_cb_, comment this out or add the member.
@@ -180,7 +272,6 @@ bool RosIoOffline::go() {
     //   continue;
     // }
   }
-
   std::cout << "[RosbagOfflineReader] Done. total=" << total
             << " pc2=" << pc2_n
             << " imu=" << imu_n
