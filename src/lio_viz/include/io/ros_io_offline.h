@@ -20,6 +20,8 @@ public:
         std::vector<std::string> topics;
         bool print_topics_ =true;
         bool down_sample_  = true;
+        double acc_scale_ = 1.0;
+        double gyro_scale_ = 1.0;
     };
     RosIoOffline(){};
     RosIoOffline(const std::string& path ): bag_path_(path) {}
