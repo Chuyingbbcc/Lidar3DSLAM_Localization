@@ -458,8 +458,8 @@ void Backend::buildKfGraphNodesAndEdges(std::vector<PoseGraphOptimizer::Node>& n
     odom_info(1,1) = 1000.0;
     odom_info(2,2) = 0.01;
 
-    odom_info(3,3) = 1000.0;
-    odom_info(4,4) = 1000.0;
+    odom_info(3,3) = 10000.0;
+    odom_info(4,4) = 10000.0;
     odom_info(5,5) = 1000.0;
     for(auto& it: key_frames_){
         auto kf = it.second;
@@ -541,7 +541,7 @@ void Backend::neuAlign() {
     //neu align
       Rigid2D align = RouteAlign::estimateRobustRigid2D(ap_vect, 2, 0.85, 10);
       double z_offset = RouteAlign::estimateMedianZOffset(ap_vect, align);
-
+      std::cout<<"z_offset: "<<z_offset<<std::endl;
       Mat3d R_align = RouteAlign::yawToRotation3D(align.yaw_);
 
       Vec3d t_align(
@@ -600,6 +600,7 @@ void Backend::runCorrectNdt() {
        //initial guess
        SE3d init_pose = prev_kf->scd_opti_pose_ * relative_motion;
        init_pose.translation() = prev_kf->fst_opti_pose_.translation();
+
 
        SE3d res = init_pose;
        bool valid = true;
@@ -661,6 +662,85 @@ void Backend::runCorrectNdt() {
    }
 }
 
+void Backend::runLoopCorrectNdt() {
+    IncNDT loop_check_ndt(backend_config_.inc_ndt_options_);
+    //---------------handel fst kf------------//
+    auto fst_kf = key_frames_.begin()->second;
+    fst_kf->loop_ndt_pose_ = fst_kf->loop_opti_pose_;
+    loop_check_ndt.AddCloud(fst_kf->cloud_ptr_);
+
+    //-------------------NDT------------------//
+   for (size_t i = 2; i<key_frames_.size(); ++i) {
+       auto cur_kf =key_frames_[i];
+       if(!cur_kf || !cur_kf->cloud_ptr_) {
+          std::cerr<< "kf damage!!"<<std::endl;
+       }
+       loop_check_ndt.SetSourceCloud(cur_kf->cloud_ptr_);
+
+       auto prev_kf = key_frames_[i-1];
+
+       //initial guess
+       SE3d init_pose = prev_kf->loop_opti_pose_;
+
+       SE3d res = init_pose;
+       bool valid = true;
+       bool ok = loop_check_ndt.Align(res);
+       if (!ok) {
+           std::cout<< "Inc_ndt failed, kf: "<< cur_kf->id_<<std::endl;
+           valid = false;
+       }
+       NdtEval eval = loop_check_ndt.computeScore(res);
+
+       //-----------check if the ndt res valid----------//
+
+       if (eval.score_ > 5.0) {
+          valid = false;
+       }
+       if (eval.valid_ratio_ < 0.80) {
+           valid= false;
+       }
+
+       //-------------check if the change valid------------//
+       const SE3d T_initial_result =
+        init_pose.inverse() *
+        res;
+
+       const double translation_change =
+           T_initial_result.translation().norm();
+
+       const double rotation_change_rad =
+           T_initial_result.so3().log().norm();
+
+       const double rotation_change_deg =
+           rotation_change_rad * 180.0 / M_PI;
+
+       if (!std::isfinite(translation_change) ||
+           !std::isfinite(rotation_change_deg)) {
+           valid = false;
+           }
+
+       if (translation_change > 2.0) {
+           valid = false;
+       }
+
+       if (rotation_change_deg > 5.0) {
+           valid = false;
+       }
+       std::string valid_str =  valid? "valid": "invalid";
+       std::cout<<"ndt: " << cur_kf->id_<< "vs " << prev_kf->id_<< std::endl;
+       if(!valid) {
+          std::cout<<"ndt res invalid!"<<std::endl;
+          cur_kf->loop_ndt_pose_  = res;
+       }
+       else {
+           cur_kf->loop_ndt_pose_ = res;
+       }
+       transformCloud(cur_kf->cloud_ptr_, cur_kf->loop_ndt_pose_);
+       loop_check_ndt.AddCloud(cur_kf->cloud_ptr_);
+       SE3d t_inv= cur_kf->loop_ndt_pose_.inverse();
+       transformCloud(cur_kf->cloud_ptr_, t_inv);
+   }
+}
 
 bool Backend::computeSubmapRtk(const Submap& sm, Vec3d& gps_pos)const  {
     std::vector<Vec3d> pts;
@@ -1359,14 +1439,15 @@ void Backend::updateLoopToKf(const std::map<size_t, SE3d>& optimized_map) {
        if (has_last && kf_id != last_id + 1) {
            std::cout << "kf order corrupted!" << std::endl;
        }
-      key_frames_[kf_id]->loop_opti_pose_ = keepXYAndYawOnly(it.second, key_frames_[kf_id]->fst_opti_pose_);
-      last_id = kf_id;
+      //key_frames_[kf_id]->loop_opti_pose_ = keepXYAndYawOnly(it.second, key_frames_[kf_id]->fst_opti_pose_);
+       key_frames_[kf_id]->loop_opti_pose_ = it.second;
+       last_id = kf_id;
        has_last = true;
    }
    for(size_t j = last_id+1; j<key_frames_.size(); j++) {
        auto& kf =  key_frames_[j];
        auto& last_kf = key_frames_[j-1];
-       SE3d delta = last_kf->scd_opti_pose_.inverse() *  kf->scd_opti_pose_;
+       SE3d delta = last_kf->fst_opti_pose_.inverse() *  kf->fst_opti_pose_;
        kf->loop_opti_pose_ = last_kf->loop_opti_pose_*delta;
    }
 }
@@ -1391,17 +1472,17 @@ void Backend::runKfLoopClosureLocalToGlobal(loop_callback callback) {
     odom_info(5,5) = 1000.0;
 
     Mat6d loop_info  = Mat6d::Zero();
-    loop_info(0,0) = 10.0;
-    loop_info(1,1) = 10.0;
-    loop_info(2,2) = 10.0;
-    loop_info(3,3) = 10.0;
-    loop_info(4,4) = 10.0;
-    loop_info(5,5) = 10.0;
+    loop_info(0,0) = 125.0;
+    loop_info(1,1) = 125.0;
+    loop_info(2,2) = 125.0;
+    loop_info(3,3) = 125.0;
+    loop_info(4,4) = 125.0;
+    loop_info(5,5) = 125.0;
 
     Mat3d  gps_info = Mat3d::Zero();
-    gps_info(0,0) = 0.0;
-    gps_info(1,1) = 0.0;
-    gps_info(2,2) = 0.0;
+    gps_info(0,0) = 0.00;
+    gps_info(1,1) = 0.00;
+    gps_info(2,2) = 0.00;
     optimizer.setGpsInfo(gps_info);
 
     bool has_last_loop_kf = false;
@@ -1412,7 +1493,7 @@ void Backend::runKfLoopClosureLocalToGlobal(loop_callback callback) {
 
     for (auto& it : key_frames_) {
         if (it.second) {
-            it.second->loop_opti_pose_ = it.second->scd_opti_pose_;
+            it.second->loop_opti_pose_ = it.second->fst_opti_pose_;
         }
     }
 
@@ -1481,7 +1562,7 @@ void Backend::runKfLoopClosureLocalToGlobal(loop_callback callback) {
         optimizer.getOptimizedPoses(optimized_poses_local);
 
         updateLoopToKf(optimized_poses_local);
-        callback(cnt);
+        //callback(cnt);
     }
     //After all local optimization down. run global optimization
     optimizer.setNodes(node_vect);
@@ -1494,7 +1575,7 @@ void Backend::runKfLoopClosureLocalToGlobal(loop_callback callback) {
     std::map<size_t, SE3d> optimized_poses_global;
     optimizer.getOptimizedPoses(optimized_poses_global);
     updateLoopToKf(optimized_poses_global);
-    callback(key_frames_.size());
+    //callback(key_frames_.size());
 }
 
 void Backend::findLoopPairs(std::vector<LoopPair> &loop_vect) {
@@ -1977,4 +2058,242 @@ void Backend::runTest(loop_callback callback) {
 
    }
    return;
+}
+bool Backend::isWindowCorrectionSafe( size_t start_id,size_t end_id,const std::map<size_t, SE3d>& optimized_poses, const SE3d& end_correction) const {
+    constexpr double max_end_translation = 10.0;
+    constexpr double max_end_rotation_deg = 5.0;
+
+    constexpr double max_roll_change_deg = 2.0;
+    constexpr double max_pitch_change_deg = 2.0;
+    const double rad_to_deg = 180.0 / M_PI;
+
+     const double end_translation_change =
+        end_correction.translation().norm();
+
+    const Vec3d end_rotation_change =
+        end_correction.so3().log();
+
+    const double end_rotation_change_deg =
+        end_rotation_change.norm() * rad_to_deg;
+
+    /*
+     * Sophus log() returns a rotation vector, not strict Euler angles.
+     *
+     * For small corrections, x/y approximately represent roll/pitch
+     * corrections and are useful as a safety diagnostic.
+     */
+    const double approximate_roll_change_deg =
+        std::abs(end_rotation_change.x()) * rad_to_deg;
+
+    const double approximate_pitch_change_deg =
+        std::abs(end_rotation_change.y()) * rad_to_deg;
+
+    std::cout
+        << "Window [" << start_id << ", " << end_id << "]\n"
+        << "End translation correction: "
+        << end_translation_change << " m\n"
+        << "End rotation correction: "
+        << end_rotation_change_deg << " deg\n"
+        << "Approx roll correction: "
+        << approximate_roll_change_deg << " deg\n"
+        << "Approx pitch correction: "
+        << approximate_pitch_change_deg << " deg\n";
+
+    if (!std::isfinite(end_translation_change) ||
+        !std::isfinite(end_rotation_change_deg)) {
+        std::cerr << "Non-finite boundary correction\n";
+        return false;
+    }
+
+    if (end_translation_change > max_end_translation) {
+        std::cerr << "Boundary translation correction too large\n";
+        return false;
+    }
+
+    if (end_rotation_change_deg > max_end_rotation_deg) {
+        std::cerr << "Boundary rotation correction too large\n";
+        return false;
+    }
+
+    if (approximate_roll_change_deg > max_roll_change_deg) {
+        std::cerr << "Roll correction too large\n";
+        return false;
+    }
+
+    if (approximate_pitch_change_deg > max_pitch_change_deg) {
+        std::cerr << "Pitch correction too large\n";
+        return false;
+    }
+
+    /*
+     * Check every optimized pose for invalid numbers.
+     */
+    for (const auto& [kf_id, pose] : optimized_poses) {
+        if (kf_id < start_id || kf_id > end_id) {
+            continue;
+        }
+
+        if (!pose.matrix().allFinite()) {
+            std::cerr
+                << "Non-finite optimized pose at KF "
+                << kf_id << '\n';
+            return false;
+        }
+    }
+
+    return true;
+
+}
+
+
+bool Backend::RunSegmentRtkOptimization(size_t start_id, size_t end_id) {
+    std::vector<PoseGraphOptimizer::Node>node_vect;
+    std::vector<PoseGraphOptimizer::Edge>edge_vect;
+
+    Mat3d gps_info = Mat3d::Zero();
+    gps_info(0,0) = 0.001;
+    gps_info(1,1) = 0.001;
+    gps_info(2,2) = 1000.0;
+
+    Mat6d odom_info = Mat6d::Zero();
+    odom_info(0,0) = 10000.0;
+    odom_info(1,1) = 10000.0;
+    odom_info(2,2) = 0.01;
+
+    odom_info(3,3) = 10000.0;
+    odom_info(4,4) = 10000.0;
+    odom_info(5,5) = 10000.0;
+
+    for (size_t i =start_id; i<end_id; i++ ) {
+        auto kf = key_frames_[i];
+        //node
+        PoseGraphOptimizer::Node node;
+        node.id_ = kf->id_;
+        node.t_ = kf->time_;
+        node.pose_init_ = kf->fst_opti_pose_;
+        node.gps_pos_ =kf->rtk_pose_.translation();
+        node_vect.push_back(node);
+        if (i == end_id -1) {
+            PoseGraphOptimizer::Node last_node;
+            auto& last_kf = key_frames_[i+1];
+            last_node.id_ = last_kf->id_;
+            last_node.t_ = last_kf->time_;
+            last_node.pose_init_ = last_kf->fst_opti_pose_;
+            last_node.gps_pos_ =last_kf->rtk_pose_.translation();
+            node_vect.push_back(last_node);
+        }
+        //edge
+        const SE3d& Ti = kf->fst_opti_pose_;
+        if (key_frames_.find(i+1) == key_frames_.end()) {
+            std::cout<<"This is the last node!" <<std::endl;
+            return false;
+        }
+        const SE3d& Tj = key_frames_[i + 1]->fst_opti_pose_;
+        PoseGraphOptimizer::Edge edge;
+        edge.id_i_ = key_frames_[i]->id_;
+        edge.id_j_ = key_frames_[i + 1]->id_;
+        //Todo: might change to other pose later
+        edge.T_i_j_ = Ti.inverse() * Tj;
+        edge.info_ = odom_info;
+        edge_vect.push_back(edge);
+    }
+    PoseGraphOptimizer optimizer(OptimizationStage::KF_RTK_OPTI);
+    optimizer.setNodes(node_vect);
+    optimizer.setEdges(edge_vect);
+    optimizer.setGpsInfo(gps_info);
+    bool ok = optimizer.optimize(20);
+    if(!ok) {
+        std::cout << "[Lv2] optimization failed, use passthrough.\n";
+        //applyLevel20Correction();
+        return false;
+    }
+
+    std::map<size_t,SE3d> optimized_poses;
+    optimizer.getOptimizedPoses(optimized_poses);
+
+    /*
+   * Make sure the graph returned the final boundary pose.
+   */
+    const auto end_it = optimized_poses.find(end_id);
+
+    if (end_it == optimized_poses.end()) {
+        std::cerr
+            << "No optimized pose for end KF "
+            << end_id << '\n';
+        return false;
+    }
+
+    //get the delta
+    const SE3d& T_w_end_before = key_frames_[end_id]->fst_opti_pose_;
+    const SE3d& T_w_end_after = end_it->second;
+    const SE3d correction =
+        T_w_end_after * T_w_end_before.inverse();
+
+    // if (!isWindowCorrectionSafe(start_id,
+    //         end_id,
+    //         optimized_poses,
+    //         correction)) {
+    //    return false;
+    // }
+
+    //update kf pose
+    for (const auto& [kf_id, opt_pose]: optimized_poses) {
+        if (kf_id < start_id || kf_id > end_id) {
+            continue;
+        }
+        key_frames_[kf_id]->fst_opti_pose_ = opt_pose;
+    }
+
+    for (size_t kf_id = end_id + 1;
+         kf_id < key_frames_.size();
+         ++kf_id) {
+
+        SE3d pose_before= key_frames_[kf_id]->fst_opti_pose_;
+        key_frames_[kf_id]->fst_opti_pose_ =
+            correction * pose_before;
+         }
+
+    return true;
+}
+
+void Backend::runLocalToGlobalRtkOptimization(rtk_opti_callback cb) {
+    const int window_size = 10;
+    const int step_size= 3;
+
+    if (key_frames_.size() < window_size) {
+       return;
+    }
+
+    size_t  last_id =0;
+
+    for (auto & it : key_frames_) {
+       auto& kf = it.second;
+       kf->fst_opti_pose_ = kf->lidar_pose_neu_;
+    }
+   //run iterative local optimization
+   for (size_t start_id = 1; start_id <= key_frames_.size(); start_id+= step_size ) {
+       const size_t end_id =
+           std::min(start_id + window_size - 1, key_frames_.size() - 1);
+
+       if (end_id <= start_id) {
+           break;
+       }
+       const bool ok= RunSegmentRtkOptimization(start_id, end_id);
+       if (!ok) {
+           std::cerr
+               << "Window [" << start_id << ", "
+               << end_id << "] rejected\n";
+       }
+
+       if (end_id == key_frames_.size()) {
+           break;
+       }
+
+       if (end_id -last_id >=1000) {
+           //cb(end_id);
+           last_id= end_id;
+       }
+
+   }
+   //run global optimization
 }

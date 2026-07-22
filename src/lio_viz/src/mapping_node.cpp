@@ -206,7 +206,7 @@ else if (mode_ == "optimization") {
 }
 
 timer_ =this->create_wall_timer(
-30ms,
+10ms,
 std::bind(&MappingNode::on_timer, this)
 );
  RCLCPP_INFO(this->get_logger(), "Mapping node publishing path: %s", pcd_path_.c_str());
@@ -291,6 +291,7 @@ void MappingNode::publish_frame() {
    se3ToMsgPose(nxt_kf_ptr->fst_opti_pose_, msg.fst_optimization_pose);
    se3ToMsgPose(nxt_kf_ptr->scd_opti_pose_, msg.scd_optimization_pose);
    se3ToMsgPose(nxt_kf_ptr->loop_opti_pose_, msg.loop_optimization_pose);
+   se3ToMsgPose(nxt_kf_ptr->loop_ndt_pose_, msg.loop_ndt_pose);
    frame_pub_->publish(msg);
 }
 
@@ -358,7 +359,7 @@ void MappingNode::writeVisualizationConfig(
                  {0, 1, 0}, {0, 0, 1});
     }
     else if (mode == MapMode::replay_frontend) {
-        setLayer(cfg["vis"]["layer1"], true, true,
+        setLayer(cfg["vis"]["layer1"], false, false,
                  "lidar_neu", "lidar_neu",
                  {1, 1, 1}, {1, 0, 0});
 
@@ -372,9 +373,10 @@ void MappingNode::writeVisualizationConfig(
                  {1, 0, 1}, {1, 0, 0});
 
         setLayer(cfg["vis"]["layer2"], true, true,
-                 "scd_optimization", "scd_optimization",
+                 "loop_optimization", "loop_optimization",
                  {1,1 , 1}, {0, 1, 0});
     }
+
     else if (mode == MapMode::optimization) {
         setLayer(cfg["vis"]["layer1"], false, true,
                  "loop_optimization", "rtk",
@@ -439,10 +441,28 @@ void MappingNode::pauseForLoopInspection()
 void MappingNode::runOptimizationMode(const std::string& init_path) {
     Backend backend(init_path);
     backend.buildSubmaps();
-    //backend.neuAlign();
-    backend.runKfRtkOptimization();
+    backend.neuAlign();
+    //backend.runKfRtkOptimization();
     //backend.runCorrectNdt();
-    //send call back to run LoopClosure
+ //    backend.runLocalToGlobalRtkOptimization(
+ //    [this, &backend](int cnt) {
+ //    std::cout<<"running callback!"<<std::endl;
+ //    std::cout<<"cnt: "<<cnt<<std::endl;
+ //    loop_check_pub_->publish(std_msgs::msg::Empty());
+ //     //publishAllKeyFramesForVis(backend.getKeyFrames());
+ //     std::queue<std::shared_ptr<KeyFrame>>().swap(replay_kf_q_);
+ //     auto& key_frames = backend.getKeyFrames();
+ //     int x = 0;
+ //     for (auto& it: key_frames) {
+ //         if (x>cnt)break;
+ //         replay_kf_q_.push(it.second);
+ //         x++;
+ //     }
+ //     pauseForLoopInspection();
+ // }
+ //    );
+
+    // //send call back to run LoopClosure
      backend.runKfLoopClosureLocalToGlobal(
        [this, &backend](int cnt) {
           std::cout<<"running callback!"<<std::endl;
@@ -459,6 +479,8 @@ void MappingNode::runOptimizationMode(const std::string& init_path) {
            pauseForLoopInspection();
        }
     );
+    //backend.runCorrectNdt();
+    std::cout<<"write backend result!"<<std::endl;
     const std::string kf_path = "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/output_temp/kf_output.txt";
     writeKeyFramesToFile(kf_path, backend.getKeyFrames());
 }

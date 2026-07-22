@@ -76,6 +76,7 @@ class KeyFrame;
 class Backend {
 public:
     using loop_callback = std::function<void(int)>;
+    using rtk_opti_callback = std::function<void(int)>;
     Backend(const std::string& init_path);
     ~Backend() = default;
     void neuAlign();
@@ -90,6 +91,8 @@ public:
     void runKfLoopClosureLocalToGlobal(loop_callback callback);
     void runTest(loop_callback callback);
     void runCorrectNdt();
+    void runLoopCorrectNdt();
+    void runLocalToGlobalRtkOptimization(rtk_opti_callback cb);
 
     std::map<size_t, std::shared_ptr<KeyFrame>> &getKeyFrames() {
         return key_frames_;
@@ -155,6 +158,10 @@ private:
                      const SE3d& reference_pose);
 
 
+    //local to global rtk optimization
+
+    bool RunSegmentRtkOptimization(size_t start_id, size_t end_id);
+    bool isWindowCorrectionSafe( size_t start_id,size_t end_id,const std::map<size_t, SE3d>& optimized_poses, const SE3d& end_correction) const;
 
     //might remove
     LoopPair chooseBestSubmapPairFromKfPair(const std::shared_ptr<KeyFrame>& kf_i,

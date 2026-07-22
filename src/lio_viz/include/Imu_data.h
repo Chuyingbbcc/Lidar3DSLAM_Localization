@@ -20,7 +20,7 @@ struct ImuData {
       Vec3d gyro = Vec3d(0.0, 0.0, 0.0);
 };
 
-inline void toImuData(ImuData& out, const sensor_msgs::msg::Imu& msg, const double t_ns) {
+inline void toImuData(ImuData& out, const sensor_msgs::msg::Imu& msg, const double t_ns, const double acc_scale =1.0, const double gyro_scale = 1.0) {
     // time
     out.t = t_ns;
 
@@ -30,11 +30,13 @@ inline void toImuData(ImuData& out, const sensor_msgs::msg::Imu& msg, const doub
     out.acc(0) = msg.linear_acceleration.x;
     out.acc(1) = msg.linear_acceleration.y;
     out.acc(2) = msg.linear_acceleration.z;
+    out.acc *= acc_scale;
 
     // gyro (angular_velocity)
     out.gyro(0) = msg.angular_velocity.x;
     out.gyro(1) = msg.angular_velocity.y;
     out.gyro(2) = msg.angular_velocity.z;
+    out.gyro *= gyro_scale;
 }
 
 

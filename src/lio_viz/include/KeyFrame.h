@@ -29,6 +29,7 @@ class KeyFrame {
    SE3d fst_opti_pose_;
    SE3d scd_opti_pose_;
    SE3d loop_opti_pose_;
+   SE3d loop_ndt_pose_;
 
 
    bool rtk_heading_valid_ = false;

@@ -38,6 +38,7 @@ void KeyFrame::write(std::ostream &os) {
     saveSE3(os, fst_opti_pose_);
     saveSE3(os, scd_opti_pose_);
     saveSE3( os, loop_opti_pose_);
+    saveSE3(os, loop_ndt_pose_);
     os<<std::endl;
 }
 
@@ -60,6 +61,7 @@ void KeyFrame::read(std::istream &is) {
    fst_opti_pose_ = load_SE3(is);
    scd_opti_pose_ = load_SE3(is);
    loop_opti_pose_ = load_SE3(is);
+   loop_ndt_pose_= load_SE3(is);
 }
 
 void writeKeyFramesToFile(const std::string &path, const std::map<size_t,std::shared_ptr<KeyFrame>>& kf_map) {

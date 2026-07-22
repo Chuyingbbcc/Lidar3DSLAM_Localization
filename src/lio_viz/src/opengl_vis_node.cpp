@@ -396,7 +396,7 @@ void OpenGLPointCloudNode::on_key_frame_callback(const lio_msgs::msg::FrameData:
    pf.fst_optimization_pose_= poseMsgToGlm((msg->fst_optimization_pose));
    pf.scd_optimization_pose_= poseMsgToGlm(msg->scd_optimization_pose);
    pf.loop_optimization_pose_ = poseMsgToGlm(msg->loop_optimization_pose);
-
+   pf.loop_ndt_pose_ = poseMsgToGlm(msg->loop_ndt_pose);
 
     //printPose("lidar", pf.lidar_pose_);
     printPose("lidar_neu", pf.loop_optimization_pose_);
@@ -611,6 +611,15 @@ switch (pose) {
         return true;
     }
 
+    case PoseType::LOOP_NDT:{
+        if (!pf.has_loop_ndt_pose_) {
+            return false;
+        }
+        T = pf.loop_ndt_pose_;
+        return true;
+    }
+
+
 }
     return false;
 }
@@ -761,6 +770,10 @@ PoseType OpenGLPointCloudNode::parsePoseType(const std::string &s) {
 
     if (s == "loop_optimization")
         return PoseType::LOOP_OPTIMIZATION;
+
+    if (s== "loop_ndt") {
+       return PoseType::LOOP_NDT;
+    }
 
     RCLCPP_WARN(
         this->get_logger(),
