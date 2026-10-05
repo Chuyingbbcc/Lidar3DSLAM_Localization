@@ -55,12 +55,10 @@ static void printPoseDebug(
             << "\n";
 }
 
-static std::atomic<bool> g_exit_requested{false};
+static volatile std::sig_atomic_t g_exit_requested = 0;
 
 void signalHandler(int sig) {
-    g_exit_requested.store(true);
-    // Ctrl+C, kill, Ctrl+Z all come here
-    rclcpp::shutdown();
+    g_exit_requested = sig;
 }
 
 MappingNode::MappingNode(): Node("mapping_node") {
@@ -86,14 +84,15 @@ if (mode_  == "mapping") {
   writeVisualizationConfig(init_path, MapMode::frontend);
   slam_thread_ = std::thread([this]() {
     try {
-      frontend_ptr_->init();
-      frontend_ptr_->Run();
+      if (!frontend_ptr_->init() || !frontend_ptr_->Run()) rclcpp::shutdown();
     }
   catch (const std::exception& e) {
     RCLCPP_ERROR(this->get_logger(), "Frontend exception: %s", e.what());
+    rclcpp::shutdown();
   }
   catch(...) {
     RCLCPP_ERROR(this->get_logger(), "Unknown frontend exception.");
+    rclcpp::shutdown();
   }
   });
 }
@@ -222,7 +221,7 @@ MappingNode::~MappingNode() {
 
   if (frontend_ptr_) {
     RCLCPP_INFO(this->get_logger(), "Stopping frontend");
-    frontend_ptr_->stop();
+    frontend_ptr_->requestStop();
     RCLCPP_INFO(this->get_logger(), "Frontend stopped");
   }
 
@@ -297,6 +296,8 @@ void MappingNode::publish_frame() {
 void MappingNode::stop_and_save() {
     if (frontend_ptr_ && mode_ == "mapping") {
         std::cout<< "stop mapping mode!"<<std::endl;
+        frontend_ptr_->requestStop();
+        if (slam_thread_.joinable()) slam_thread_.join();
         frontend_ptr_->requestStopAndSave();
     }
 }
@@ -432,14 +433,14 @@ void MappingNode::pauseForLoopInspection()
 
     std::unique_lock<std::mutex> lk(loop_pause_mutex_);
     std::cout<<"resume loop!"<<std::endl;
-    loop_pause_cv_.wait(lk, [&]() {
-        return loop_resume_requested_ || !rclcpp::ok();
-    });
+    while (!loop_resume_requested_ && rclcpp::ok()) {
+        loop_pause_cv_.wait_for(lk, std::chrono::milliseconds(100));
+    }
 }
 void MappingNode::runOptimizationMode(const std::string& init_path) {
     Backend backend(init_path);
     backend.buildSubmaps();
-    //backend.neuAlign();
+    backend.neuAlign();
     backend.runKfRtkOptimization();
     //backend.runCorrectNdt();
     //send call back to run LoopClosure
@@ -465,24 +466,37 @@ void MappingNode::runOptimizationMode(const std::string& init_path) {
 
 
 int main(int argc, char **argv) {
-  rclcpp::init(argc, argv);
-    // std::signal(SIGINT, signalHandler);   // Ctrl+C
-    // std::signal(SIGTERM, signalHandler);  // kill PID
-    // std::signal(SIGTSTP, signalHandler);  // Ctrl+Z
-    auto node = std::make_shared<MappingNode>();
-
-    rclcpp::spin(node);
-
-    std::cout << "[main] spin exited, saving KFs...\n";
-
-    //node->stop_and_save();
-
-    node.reset();
-
-    if (rclcpp::ok()) {
-        rclcpp::shutdown();
+    rclcpp::init(argc, argv);
+    std::signal(SIGINT, signalHandler);
+    std::signal(SIGTERM, signalHandler);
+    std::signal(SIGTSTP, signalHandler);
+    std::shared_ptr<MappingNode> node;
+    int result = 0;
+    try {
+        node = std::make_shared<MappingNode>();
+        rclcpp::executors::SingleThreadedExecutor executor;
+        executor.add_node(node);
+        while (rclcpp::ok() && !g_exit_requested) {
+            executor.spin_some();
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Mapping node failure: " << e.what() << std::endl;
+        result = 1;
+    } catch (...) {
+        std::cerr << "Unknown mapping node failure" << std::endl;
+        result = 1;
     }
-
-    std::cout << "map node shut down!\n";
-    return 0;
+    // Release backend inspection waits before joining any worker.
+    rclcpp::shutdown();
+    if (node) {
+        try {
+            node->stop_and_save();
+        } catch (const std::exception& e) {
+            std::cerr << "Failed saving keyframes: " << e.what() << std::endl;
+            result = 1;
+        }
+        node.reset();
+    }
+    return result;
 }

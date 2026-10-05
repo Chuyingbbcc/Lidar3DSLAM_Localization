@@ -79,6 +79,7 @@ bool Interpolate_gps(const double qt, std::shared_ptr<KeyFrame>kf_ptr, std::map<
     }
     // get the lower bound
     auto it_right = gpsMap.lower_bound(qt);
+    if (it_right == gpsMap.end()) return false;
     if(it_right == gpsMap.begin()) {
        if(it_right->first == qt) {
           kf_ptr->rtk_pose_ =  it_right->second.pose_;

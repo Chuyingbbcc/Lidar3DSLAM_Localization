@@ -34,6 +34,7 @@ class Frontend {
     bool init();
     bool Run();
     void stop();
+    void requestStop();
 
     //Publish
     void publishCloudPath(const std::string& new_path);

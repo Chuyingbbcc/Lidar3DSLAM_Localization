@@ -62,6 +62,7 @@ bool Frontend::Run() {
 
         io_ptr_->onWait(
            [&]() ->void {
+               if (stop_requested_.load()) throw std::runtime_error("Mapping stop requested");
                lio_pipe_ptr_->waitIfDoneQueueToolLarge();
            }
         );
@@ -140,25 +141,25 @@ bool Frontend::Run() {
     }
     catch (const std::exception &e) {
         std::cerr << "Frontend::Run exception: " << e.what() << std::endl;
-        lio_pipe_ptr_->stopNow();
-        return false;
+        if (lio_pipe_ptr_) lio_pipe_ptr_->stopNow();
+        saveCurrentKeyFrames();
+        return stop_requested_.load();
     }
     catch (...) {
         std::cerr << "Frontend::Run unknown exception.\n";
-        lio_pipe_ptr_->stopNow();
-        return false;
+        if (lio_pipe_ptr_) lio_pipe_ptr_->stopNow();
+        saveCurrentKeyFrames();
+        return stop_requested_.load();
     }
 
 }
 
 void Frontend::stop() {
-    bool was_already_stopping = stop_requested_.exchange(true);
-    if (was_already_stopping) {
-        return;
-    }
-    lio_pipe_ptr_->stopDrain();
+    requestStopAndSave();
+}
 
-    saveCurrentKeyFrames();
+void Frontend::requestStop() {
+    stop_requested_.store(true);
     kf_q_.stop();
 }
 
@@ -339,7 +340,7 @@ void Frontend::publishKeyframe(const std::shared_ptr<KeyFrame> kf_ptr) {
 
 std::shared_ptr<KeyFrame> Frontend::takeNextKeyFrame() {
    std::shared_ptr<KeyFrame>kf_ptr= make_shared<KeyFrame>();
-   kf_q_.wait_and_pop(kf_ptr);
+   if (!kf_q_.try_pop(kf_ptr)) return nullptr;
    return kf_ptr;
 }
 
@@ -353,7 +354,13 @@ void Frontend::saveCurrentKeyFrames() {
     bool first_gps = true;
     Vec3d origin = Vec3d::Zero();
 
-    for (auto& it : key_frame_map_) {
+    if (key_frame_map_.empty()) return;
+
+    std::map<size_t, std::shared_ptr<KeyFrame>> snapshot;
+    for (const auto& it : key_frame_map_) {
+        if (it.second) snapshot.emplace(it.first, std::make_shared<KeyFrame>(*it.second));
+    }
+    for (auto& it : snapshot) {
         auto& kf = it.second;
 
         Interpolate_gps(
@@ -372,7 +379,7 @@ void Frontend::saveCurrentKeyFrames() {
     if (output_kf_) {
         writeKeyFramesToFile(
             fe_options_.lio_options_.out_kf_info_path_,
-            key_frame_map_);
+            snapshot);
     }
 
     std::cout << "[Frontend] Saved current keyframes: "
@@ -381,8 +388,7 @@ void Frontend::saveCurrentKeyFrames() {
 }
 
 void Frontend::requestStopAndSave() {
-    bool old = stop_requested_.exchange(true);
-    if (old) return;
+    requestStop();
 
     std::cout << "[Frontend] Stop requested, saving current KFs...\n";
 

@@ -52,6 +52,7 @@ void loadKeyFrames(const std::string& path, std::map<size_t,std::shared_ptr<KeyF
 class KeyFrameQueue {
 public:
     void push(std::shared_ptr<KeyFrame> kf);
+    bool try_pop(std::shared_ptr<KeyFrame>& kf);
     bool wait_and_pop(std::shared_ptr<KeyFrame>& kf);
     void stop();
 private:

@@ -31,7 +31,9 @@ LioPipe::LioPipe(std::size_t num_thread, double slack, const LioOptions& options
 
 void LioPipe::start() {
 if(running_.exchange(true))return;
-consumer_thread_= std::thread([this]{this->postProcess();});
+consumer_thread_= std::thread([this]{
+    try { postProcess(); } catch (...) { recordWorkerFailure(); }
+});
 }
 
 void LioPipe::onLidarMsg(const sensor_msgs::msg::PointCloud2& msg,double ts) {
@@ -43,10 +45,12 @@ void LioPipe::onLidarMsg(const sensor_msgs::msg::PointCloud2& msg,double ts) {
 
     lidar_inflight_.fetch_add(1, std::memory_order_acq_rel);
     bool enqueued = thread_pool_.try_enqueue([this, ts, msg_ptr, ops]() {
+       try {
        PointCloud point_cloud;
        point_cloud.setTime(ts);
        pc_pre_(msg_ptr, point_cloud, ops);
        reorder_.pushProcessed(point_cloud);
+       } catch (...) { recordWorkerFailure(); }
        const int left= lidar_inflight_.fetch_sub(1, std::memory_order_acq_rel) -1;
        if(left ==0 && bag_done_.load(std::memory_order_acquire)) {
          reorder_.closeInput();
@@ -185,13 +189,16 @@ void LioPipe::notifyEndOfBag() {
 
 void LioPipe::waitIfDoneQueueToolLarge() {
    //balance the io and done queue
+   rethrowWorkerFailure();
    reorder_.waitIfReadyTooLarge();
+   rethrowWorkerFailure();
 }
 
 void LioPipe::waitUntilDrained() {
    reorder_.waitUntilDone();
    //std::cout<< "recoder successfully closed!" << std::endl;
     if (consumer_thread_.joinable()) consumer_thread_.join();
+    rethrowWorkerFailure();
 }
 
 void LioPipe::stopDrain() {
@@ -247,4 +254,21 @@ lo_.AddCloud(point_cloud_ptr, cur_pose);
 const SE3d lo_pose = cur_pose;
 eskf_.ObserveSE3(cur_pose);
 return;
+}
+
+void LioPipe::recordWorkerFailure() {
+    {
+        std::lock_guard<std::mutex> lock(failure_mutex_);
+        if (!worker_failure_) worker_failure_ = std::current_exception();
+    }
+    reorder_.stop();
+}
+
+void LioPipe::rethrowWorkerFailure() {
+    std::exception_ptr failure;
+    {
+        std::lock_guard<std::mutex> lock(failure_mutex_);
+        failure = worker_failure_;
+    }
+    if (failure) std::rethrow_exception(failure);
 }
