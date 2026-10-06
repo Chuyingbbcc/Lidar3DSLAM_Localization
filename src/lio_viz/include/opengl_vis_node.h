@@ -6,6 +6,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_msgs/msg/empty.hpp>
+#include <std_msgs/msg/u_int64.hpp>
 #include <lio_msgs/msg/frame_data.hpp>
 #include <geometry_msgs/msg/pose.hpp>
 #include "glad.h"
@@ -41,6 +42,8 @@ enum class  PoseType {
 };
 
 struct PendingFrame {
+   uint64_t refresh_id_ = 0;
+   bool refresh_last_ = false;
    uint64_t frame_id_ = 0;
    uint64_t submap_id_ =0;
    std::string cloud_path_ = "";
@@ -103,8 +106,11 @@ private:
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr sub_;
     rclcpp::Subscription<lio_msgs::msg::FrameData>::SharedPtr frame_sub_;
 
-    rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr loop_check_sub_;
-    rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr loop_resume_pub_;
+    rclcpp::Subscription<std_msgs::msg::UInt64>::SharedPtr loop_check_sub_;
+    rclcpp::Publisher<std_msgs::msg::UInt64>::SharedPtr viewer_ready_pub_;
+    rclcpp::Publisher<std_msgs::msg::UInt64>::SharedPtr viewer_loaded_pub_;
+    uint64_t active_refresh_id_ = 0;
+    rclcpp::Publisher<std_msgs::msg::UInt64>::SharedPtr loop_resume_pub_;
 
     bool loop_inspection_mode_{false};
 
@@ -244,7 +250,7 @@ private:
     PoseType parsePoseType(const std::string& s);
 
     //loop control
-    void onLoopCheckResult(const std_msgs::msg::Empty::SharedPtr msg);
+    void onLoopCheckResult(const std_msgs::msg::UInt64::SharedPtr msg);
     void clearVisualization();
     static void key_callback(
         GLFWwindow* window,

@@ -24,7 +24,7 @@ public:
         double t_;
         SE3d pose_init_;
         bool has_gps_ = true;
-        Vec3d gps_pos_;
+        Vec3d gps_pos_ = Vec3d::Zero();
     };
     struct Edge {
        size_t id_i_;
@@ -47,7 +47,7 @@ private:
     std::unique_ptr<g2o::SparseOptimizer> optimizer_;
     OptimizationStage stage_;
 
-    Mat3d gps_info_;
+    Mat3d gps_info_ = Mat3d::Zero();
 
     bool buildOptimizer();
     void addVertices();

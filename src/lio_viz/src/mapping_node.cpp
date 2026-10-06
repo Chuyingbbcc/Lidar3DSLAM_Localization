@@ -73,9 +73,15 @@ frontend_ptr_ = std::make_unique<Frontend>(init_path);
 //run frontend
 
 //pause/resume control
-loop_check_pub_ = create_publisher<std_msgs::msg::Empty>(
+loop_check_pub_ = create_publisher<std_msgs::msg::UInt64>(
             "/loop_closure/check_result", 1);
-loop_resume_sub_ = create_subscription<std_msgs::msg::Empty>(
+viewer_ready_sub_ = create_subscription<std_msgs::msg::UInt64>(
+    "/loop_closure/viewer_ready", 1,
+    std::bind(&MappingNode::onViewerReady, this, std::placeholders::_1));
+viewer_loaded_sub_ = create_subscription<std_msgs::msg::UInt64>(
+    "/loop_closure/viewer_loaded", 1,
+    std::bind(&MappingNode::onViewerLoaded, this, std::placeholders::_1));
+loop_resume_sub_ = create_subscription<std_msgs::msg::UInt64>(
             "/loop_closure/resume",
             1, std::bind( &MappingNode::onLoopResume, this,
                 std::placeholders::_1));
@@ -239,6 +245,8 @@ MappingNode::~MappingNode() {
 
 void MappingNode::publish_frame() {
   std::shared_ptr<KeyFrame>nxt_kf_ptr = nullptr;
+  uint64_t refresh_id = 0;
+  bool refresh_last = false;
   // if (mode_ == "optimization") {
   //   return;
   // }
@@ -246,15 +254,37 @@ void MappingNode::publish_frame() {
     nxt_kf_ptr = frontend_ptr_->takeNextKeyFrame();
  }
  else {
-   if(replay_kf_q_.size() >0) {
+   std::lock_guard<std::mutex> lock(replay_mutex_);
+   if (replay_enabled_ && !replay_kf_q_.empty()) {
       nxt_kf_ptr = replay_kf_q_.front();
       replay_kf_q_.pop();
+      refresh_id = replay_refresh_id_;
+      refresh_last = refresh_id != 0 && replay_kf_q_.empty();
    }
  }
+ publishKeyFrameForVis(nxt_kf_ptr, refresh_id, refresh_last);
+ if (refresh_last) {
+   std::lock_guard<std::mutex> lock(loop_pause_mutex_);
+   if (refresh_id == refresh_id_) snapshot_sent_ = true;
+ }
+}
+
+void MappingNode::publishAllKeyFramesForVis(
+    const std::map<size_t, std::shared_ptr<KeyFrame>>& kfs) {
+  for (const auto& entry : kfs) {
+    publishKeyFrameForVis(entry.second);
+  }
+}
+
+void MappingNode::publishKeyFrameForVis(
+    const std::shared_ptr<KeyFrame>& nxt_kf_ptr,
+    uint64_t refresh_id, bool refresh_last) {
  if (!nxt_kf_ptr) {
    return;
  }
  lio_msgs::msg::FrameData msg;
+ msg.refresh_id = refresh_id;
+ msg.refresh_last = refresh_last;
   msg.header.stamp = this->now();
   msg.header.frame_id = "map";
 
@@ -287,6 +317,7 @@ void MappingNode::publish_frame() {
    se3ToMsgPose(nxt_kf_ptr->lidar_pose_, msg.lidar_pose);
    se3ToMsgPose(nxt_kf_ptr->lidar_pose_neu_, msg.lidar_pose_neu);
    se3ToMsgPose(nxt_kf_ptr->rtk_pose_, msg.rtk_pose);
+   msg.has_rtk_pose = nxt_kf_ptr->rtk_valid_;
    se3ToMsgPose(nxt_kf_ptr->fst_opti_pose_, msg.fst_optimization_pose);
    se3ToMsgPose(nxt_kf_ptr->scd_opti_pose_, msg.scd_optimization_pose);
    se3ToMsgPose(nxt_kf_ptr->loop_opti_pose_, msg.loop_optimization_pose);
@@ -413,30 +444,93 @@ void MappingNode::writeVisualizationConfig(
         "Wrote visualization config: %s",
         config_path.c_str());
 }
+void MappingNode::onViewerReady(const std_msgs::msg::UInt64::SharedPtr msg) {
+    {
+        std::lock_guard<std::mutex> lock(loop_pause_mutex_);
+        if (!awaiting_inspection_ || msg->data != refresh_id_) return;
+        viewer_ready_ = true;
+    }
+    loop_pause_cv_.notify_all();
+}
+
+void MappingNode::onViewerLoaded(const std_msgs::msg::UInt64::SharedPtr msg) {
+    std::lock_guard<std::mutex> lock(loop_pause_mutex_);
+    if (awaiting_inspection_ && snapshot_sent_ && msg->data == refresh_id_)
+        viewer_rendered_ = true;
+    loop_pause_cv_.notify_all();
+}
+
 void MappingNode::onLoopResume(
-    const std_msgs::msg::Empty::SharedPtr)
+    const std_msgs::msg::UInt64::SharedPtr msg)
 {
     {
         std::lock_guard<std::mutex> lock(loop_pause_mutex_);
+        if (!awaiting_inspection_ || !snapshot_sent_ || msg->data != refresh_id_) return;
         loop_resume_requested_ = true;
     }
 
     loop_pause_cv_.notify_one();
 }
 
-void MappingNode::pauseForLoopInspection()
-{
+void MappingNode::pauseForLoopInspection() {
+    std::unique_lock<std::mutex> lock(loop_pause_mutex_);
+    while (rclcpp::ok() && !(loop_resume_requested_ && viewer_rendered_)) {
+        loop_pause_cv_.wait_for(lock, std::chrono::milliseconds(100));
+    }
+    awaiting_inspection_ = false;
+}
+
+void MappingNode::refreshForLoopInspection(
+    const std::map<size_t, std::shared_ptr<KeyFrame>>& kfs, size_t count) {
+    // Copy only keyframe metadata/poses; point cloud buffers remain shared.
+    std::queue<std::shared_ptr<KeyFrame>> snapshot;
+    for (const auto& entry : kfs) {
+        if (snapshot.size() >= count) break;
+        if (entry.second && entry.second->scd_opti_pose_.matrix().allFinite())
+            snapshot.push(std::make_shared<KeyFrame>(*entry.second));
+    }
+    if (snapshot.empty()) return;
+    {
+        std::lock_guard<std::mutex> lock(replay_mutex_);
+        replay_enabled_ = false;
+        std::queue<std::shared_ptr<KeyFrame>>().swap(replay_kf_q_);
+    }
+    uint64_t id;
     {
         std::lock_guard<std::mutex> lock(loop_pause_mutex_);
+        id = ++refresh_id_;
+        viewer_ready_ = false;
+        viewer_rendered_ = false;
         loop_resume_requested_ = false;
+        snapshot_sent_ = false;
+        awaiting_inspection_ = true;
     }
-
-    std::unique_lock<std::mutex> lk(loop_pause_mutex_);
-    std::cout<<"resume loop!"<<std::endl;
-    while (!loop_resume_requested_ && rclcpp::ok()) {
-        loop_pause_cv_.wait_for(lk, std::chrono::milliseconds(100));
+    std_msgs::msg::UInt64 reset;
+    reset.data = id;
+    loop_check_pub_->publish(reset);
+    {
+        std::unique_lock<std::mutex> lock(loop_pause_mutex_);
+        auto retry_at = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        while (rclcpp::ok() && !viewer_ready_) {
+            loop_pause_cv_.wait_for(lock, std::chrono::milliseconds(100));
+            if (!viewer_ready_ && rclcpp::ok() && std::chrono::steady_clock::now() >= retry_at) {
+                lock.unlock();
+                loop_check_pub_->publish(reset);
+                lock.lock();
+                retry_at = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+            }
+        }
+        if (!rclcpp::ok()) { awaiting_inspection_ = false; return; }
     }
+    {
+        std::lock_guard<std::mutex> lock(replay_mutex_);
+        replay_kf_q_.swap(snapshot);
+        replay_refresh_id_ = id;
+        replay_enabled_ = true;
+    }
+    pauseForLoopInspection();
 }
+
 void MappingNode::runOptimizationMode(const std::string& init_path) {
     Backend backend(init_path);
     backend.buildSubmaps();
@@ -446,18 +540,7 @@ void MappingNode::runOptimizationMode(const std::string& init_path) {
     //send call back to run LoopClosure
      backend.runKfLoopClosureLocalToGlobal(
        [this, &backend](int cnt) {
-          std::cout<<"running callback!"<<std::endl;
-          loop_check_pub_->publish(std_msgs::msg::Empty());
-           //publishAllKeyFramesForVis(backend.getKeyFrames());
-           std::queue<std::shared_ptr<KeyFrame>>().swap(replay_kf_q_);
-           auto& key_frames = backend.getKeyFrames();
-           int x = 0;
-           for (auto& it: key_frames) {
-               if (x>cnt)break;
-               replay_kf_q_.push(it.second);
-               x++;
-           }
-           pauseForLoopInspection();
+           refreshForLoopInspection(backend.getKeyFrames(), static_cast<size_t>(cnt));
        }
     );
     const std::string kf_path = "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/output_temp/kf_output.txt";

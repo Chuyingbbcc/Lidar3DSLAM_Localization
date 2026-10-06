@@ -30,7 +30,7 @@ struct LoopClosureOptions {
     //ndt eval
    double score_gate_ = 3.3;
    int valid_count_gate_ = 500;
-   double valid_ratio_gate_ = 0.85;
+   double valid_ratio_gate_ = 0.70;
    //
    int half_sw_size_ =10;
 

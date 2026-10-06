@@ -79,7 +79,7 @@ OpenGLPointCloudNode::OpenGLPointCloudNode()
     point_picker_.clear();
 
     loop_check_sub_ =
-    this->create_subscription<std_msgs::msg::Empty>(
+    this->create_subscription<std_msgs::msg::UInt64>(
         "/loop_closure/check_result",
         1,
         std::bind(
@@ -87,8 +87,12 @@ OpenGLPointCloudNode::OpenGLPointCloudNode()
             this,
             std::placeholders::_1));
 
+    viewer_ready_pub_ = create_publisher<std_msgs::msg::UInt64>("/loop_closure/viewer_ready", 1);
+
+    viewer_loaded_pub_ = create_publisher<std_msgs::msg::UInt64>("/loop_closure/viewer_loaded", 1);
+
     loop_resume_pub_ =
-    this->create_publisher<std_msgs::msg::Empty>(
+    this->create_publisher<std_msgs::msg::UInt64>(
         "/loop_closure/resume", 1);
 }
 
@@ -372,6 +376,7 @@ void OpenGLPointCloudNode::on_pcd_path(const std_msgs::msg::String::SharedPtr ms
 }
 
 void OpenGLPointCloudNode::on_key_frame_callback(const lio_msgs::msg::FrameData::SharedPtr msg) {
+   if (msg->refresh_id != active_refresh_id_) return;
    if(!initialized_) {
       std::string init_path = "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/Config/config.yaml";
        if (loadVisNodeConfig(init_path)) {
@@ -386,6 +391,8 @@ void OpenGLPointCloudNode::on_key_frame_callback(const lio_msgs::msg::FrameData:
                   << std::endl;
    };
    PendingFrame pf;
+   pf.refresh_id_ = msg->refresh_id;
+   pf.refresh_last_ = msg->refresh_last;
    pf.frame_id_ = msg->frame_id;
    pf.submap_id_ = msg->submap_id;
    pf.cloud_path_ = msg->cloud_path;
@@ -418,12 +425,13 @@ void OpenGLPointCloudNode::consume_pending_frames() {
   }
 
   for(auto& pf :  local) {
+    if (pf.refresh_id_ != active_refresh_id_) continue;
     std::cout<<"frame id: "<<pf.frame_id_<<std::endl;
     std::vector<PointVertex>local_points_raw;
     std::vector<PointVertex> local_points;
     if (layer1_.draw_map_ || layer2_.draw_map_) {
        if (!load_point_cloud_local(pf.cloud_path_, local_points_raw)) {
-           continue;
+           RCLCPP_ERROR(get_logger(), "Cannot load snapshot cloud: %s", pf.cloud_path_.c_str());
        }
        //Todo:: change the voxel size later
        local_points = voxelDownsampleLocal(local_points_raw, 0.2);
@@ -445,6 +453,12 @@ void OpenGLPointCloudNode::consume_pending_frames() {
           route_gpu_dirty_2_ = true;
       }
     auto_fit_pending_ = true;
+    if (pf.refresh_last_) {
+        loop_inspection_mode_ = true;
+        std_msgs::msg::UInt64 ready;
+        ready.data = active_refresh_id_;
+        viewer_loaded_pub_->publish(ready);
+    }
   }
   point_picker_.build();
 }
@@ -1188,7 +1202,10 @@ screenRay(double mouse_x, double mouse_y, glm::vec3 &ray_o, glm::vec3 &ray_dir) 
 }
 
 void OpenGLPointCloudNode::clearVisualization() {
-    pending_frames_.clear();
+    {
+        std::lock_guard<std::mutex> lock(pending_mutex_);
+        pending_frames_.clear();
+    }
 
     map_points_1_.clear();
     map_points_2_.clear();
@@ -1225,22 +1242,22 @@ void OpenGLPointCloudNode::clearVisualization() {
     auto_fit_pending_ = true;
 }
 
-void OpenGLPointCloudNode::onLoopCheckResult(
-    const std_msgs::msg::Empty::SharedPtr)
-{
-    //vis node receive the sig from map, then clear vis, render again
-    clearVisualization();
-
-    loop_inspection_mode_ = true;
-
-    RCLCPP_INFO(
-        this->get_logger(),
-        "Loop optimization finished. Restart visualization.");
+void OpenGLPointCloudNode::onLoopCheckResult(const std_msgs::msg::UInt64::SharedPtr msg) {
+    if (msg->data < active_refresh_id_) return;
+    if (msg->data != active_refresh_id_) {
+        clearVisualization();
+        active_refresh_id_ = msg->data;
+        loop_inspection_mode_ = false;
+        RCLCPP_INFO(get_logger(), "Loading loop snapshot; Ctrl+L resumes when loading finishes.");
+    }
+    viewer_ready_pub_->publish(*msg);
 }
 
 void OpenGLPointCloudNode::publishLoopResume()
 {
-    loop_resume_pub_->publish(std_msgs::msg::Empty());
+    std_msgs::msg::UInt64 resume;
+    resume.data = active_refresh_id_;
+    loop_resume_pub_->publish(resume);
 
     loop_inspection_mode_ = false;
 

@@ -33,7 +33,9 @@ class EdgeSE3GPS: public g2o::BaseUnaryEdge<3, Vec3d, g2o::VertexSE3> {
 
     void linearizeOplus() override {
        _jacobianOplusXi.setZero();
-       _jacobianOplusXi.block<3,3>(0,0) = Mat3d::Identity();
+       const auto* v = static_cast<const g2o::VertexSE3*>(_vertices[0]);
+       // VertexSE3 applies right increments: t_new = t + R * delta_t.
+       _jacobianOplusXi.block<3,3>(0,0) = v->estimate().rotation();
     }
     bool read(std::istream&) override { return false; }
     bool write(std::ostream&) const override { return false; }
@@ -198,9 +200,7 @@ void PoseGraphOptimizer::addRelativeEdges() {
     }
 }
 void PoseGraphOptimizer::setGpsInfo(Mat3d& gps_info) {
-   gps_info_(0,0) =gps_info(0,0);
-   gps_info_(1,1) =gps_info(1,1);
-   gps_info_(2,2) =gps_info(2,2);
+   gps_info_ = gps_info;
 }
 void PoseGraphOptimizer::addGpsEdges() {
     if (!optimizer_) {
@@ -208,7 +208,7 @@ void PoseGraphOptimizer::addGpsEdges() {
     }
     for(size_t i=0; i<nodes_.size(); ++i) {
        const auto& node = nodes_[i];
-       if(!node.has_gps_) {
+       if(!node.has_gps_ || !node.gps_pos_.allFinite()) {
            continue;
        }
        auto* edge = new EdgeSE3GPS();

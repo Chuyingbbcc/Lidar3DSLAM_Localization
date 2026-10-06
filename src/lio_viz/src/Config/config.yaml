@@ -47,7 +47,7 @@ vis:
   layer1:
     draw_map: false
     draw_route: true
-    map_pose: loop_optimization
+    map_pose: fst_optimization
     route_pose: rtk
     map_color:
       - 1
@@ -60,8 +60,8 @@ vis:
   layer2:
     draw_map: true
     draw_route: true
-    map_pose: loop_optimization
-    route_pose: loop_optimization
+    map_pose: scd_optimization
+    route_pose: scd_optimization
     map_color:
       - 1
       - 1

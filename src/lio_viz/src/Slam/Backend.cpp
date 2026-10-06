@@ -316,6 +316,12 @@ void Backend::runSubmapInsideOptimization() {
 // }
 
 void Backend::runKfRtkOptimization() {
+    // A failed or incomplete solve must retain the current aligned input.
+    for (const auto& entry : key_frames_) {
+        if (!entry.second) continue;
+        entry.second->fst_opti_pose_ = entry.second->lidar_pose_neu_;
+        entry.second->scd_opti_pose_ = entry.second->lidar_pose_neu_;
+    }
     std::vector<PoseGraphOptimizer::Node>node_vect;
     std::vector<PoseGraphOptimizer::Edge>edge_vect;
 
@@ -334,7 +340,6 @@ void Backend::runKfRtkOptimization() {
     bool ok = optimizer.optimize(20);
     if(!ok) {
         std::cout << "[Lv2] optimization failed, use passthrough.\n";
-        //applyLevel20Correction();
         return;
     }
     std::map<size_t,SE3d> opt_poses;
@@ -343,8 +348,9 @@ void Backend::runKfRtkOptimization() {
     //update back to Kfs
     for (auto& kf_it : key_frames_) {
         auto& kf = kf_it.second;
+        if (!kf) continue;
         auto it = opt_poses.find(kf->id_);
-        if (it != opt_poses.end()) {
+        if (it != opt_poses.end() && it->second.matrix().allFinite()) {
             kf->fst_opti_pose_ = it->second;
             kf->scd_opti_pose_ = kf->fst_opti_pose_;
 
@@ -461,30 +467,26 @@ void Backend::buildKfGraphNodesAndEdges(std::vector<PoseGraphOptimizer::Node>& n
     odom_info(3,3) = 1000.0;
     odom_info(4,4) = 1000.0;
     odom_info(5,5) = 1000.0;
-    for(auto& it: key_frames_){
-        auto kf = it.second;
-        auto id =  it.first;
-        //node
+    std::shared_ptr<KeyFrame> previous;
+    for (const auto& entry : key_frames_) {
+        const auto& kf = entry.second;
+        if (!kf || !kf->lidar_pose_neu_.matrix().allFinite()) continue;
         PoseGraphOptimizer::Node node;
         node.id_ = kf->id_;
         node.t_ = kf->time_;
         node.pose_init_ = kf->lidar_pose_neu_;
-        node.gps_pos_ =kf->rtk_pose_.translation();
+        node.has_gps_ = kf->rtk_valid_ && kf->rtk_pose_.translation().allFinite();
+        if (node.has_gps_) node.gps_pos_ = kf->rtk_pose_.translation();
         node_vect.push_back(node);
-        //edge
-        const SE3d& Ti = key_frames_[id]->lidar_pose_neu_;
-        if (key_frames_.find(id+1) == key_frames_.end()) {
-           std::cout<<"This is the last node!" <<std::endl;
-           return;
+        if (previous) {
+            PoseGraphOptimizer::Edge edge;
+            edge.id_i_ = previous->id_;
+            edge.id_j_ = kf->id_;
+            edge.T_i_j_ = previous->lidar_pose_neu_.inverse() * kf->lidar_pose_neu_;
+            edge.info_ = odom_info;
+            edge_vect.push_back(edge);
         }
-        const SE3d& Tj = key_frames_[id + 1]->lidar_pose_neu_;
-        PoseGraphOptimizer::Edge edge;
-        edge.id_i_ = key_frames_[id]->id_;
-        edge.id_j_ = key_frames_[id + 1]->id_;
-        //Todo: might change to other pose later
-        edge.T_i_j_ = Ti.inverse() * Tj;
-        edge.info_ = odom_info;
-        edge_vect.push_back(edge);
+        previous = kf;
     }
 }
 
@@ -532,11 +534,21 @@ void Backend::neuAlign() {
       }
       AlignedPair ap;
       auto& kf = it.second;
+      if (!kf || !kf->rtk_valid_ ||
+          !kf->rtk_pose_.translation().allFinite() ||
+          !kf->lidar_pose_.matrix().allFinite()) continue;
       ap.timestamp_ = kf->time_;
       ap.p_odom_ = kf->lidar_pose_.translation();
       ap.p_rtk_ = kf->rtk_pose_.translation();
       ap_vect.emplace_back(ap);
         count++;
+    }
+    if (ap_vect.size() < 2) {
+        std::cerr << "[RTK] Insufficient valid GPS pairs; retaining LiDAR coordinates.\n";
+        for (const auto& entry : key_frames_) {
+            if (entry.second) entry.second->lidar_pose_neu_ = entry.second->lidar_pose_;
+        }
+        return;
     }
     //neu align
       Rigid2D align = RouteAlign::estimateRobustRigid2D(ap_vect, 2, 0.85, 10);
@@ -558,6 +570,7 @@ void Backend::neuAlign() {
 
       for (auto& it : key_frames_) {
           auto& kf = it.second;
+          if (!kf) continue;
           kf->lidar_pose_neu_ = convert2neu(kf->lidar_pose_);
 
           auto dist = (kf->lidar_pose_neu_.translation() - kf->rtk_pose_.translation()).norm();
@@ -749,28 +762,22 @@ void Backend::buildSubmapPointCloud() {
 }
 
 std::shared_ptr<PointCloud>Backend::buildSlidingWindowCloud(size_t kf_id) {
-    LoopClosureOptions options = backend_config_.loop_closure_options_;
-    std::shared_ptr<PointCloud> sw_cloud = std::make_shared<PointCloud>();
-    int center = static_cast<int>(kf_id);
-    int lb = std::max(0, center - static_cast<int>(options.half_sw_size_));
-    int ub = std::min(
-        static_cast<int>(key_frames_.size()) - 1,
-        center + static_cast<int>(options.half_sw_size_));
-    auto& kf_i =key_frames_[kf_id];
-    for(size_t j = lb; j <= ub; j++) {
-        auto& kf_j = key_frames_[j];
-        if(!kf_j || !kf_j->cloud_ptr_) {
-            std::cout<<"kf or cloud is missing!"<<std::endl;
-            continue;
-        }
-        SE3d T_i_j = kf_i->loop_opti_pose_.inverse() * kf_j->loop_opti_pose_;
-        PointCloud tmp_cloud = transformCloudCopy(
-               kf_j->cloud_ptr_,
-               T_i_j);
-        sw_cloud->append(std::make_shared<PointCloud>(tmp_cloud),
-              tmp_cloud.size());
+    auto cloud = std::make_shared<PointCloud>();
+    const auto center = key_frames_.find(kf_id);
+    if (center == key_frames_.end() || !center->second) return cloud;
+    const size_t half = static_cast<size_t>(std::max(0, backend_config_.loop_closure_options_.half_sw_size_));
+    auto first = center;
+    for (size_t n = 0; n < half && first != key_frames_.begin(); ++n) --first;
+    auto last = center;
+    for (size_t n = 0; n <= half && last != key_frames_.end(); ++n) ++last;
+    for (auto it = first; it != last; ++it) {
+        const auto& kf = it->second;
+        if (!kf || !kf->cloud_ptr_ || !kf->loop_opti_pose_.matrix().allFinite()) continue;
+        const SE3d relative = center->second->loop_opti_pose_.inverse() * kf->loop_opti_pose_;
+        auto transformed = std::make_shared<PointCloud>(transformCloudCopy(kf->cloud_ptr_, relative));
+        cloud->append(transformed, transformed->size());
     }
-    return sw_cloud;
+    return cloud;
 }
 
 std::pair<NdtEval,SE3d> Backend::runSubmapNdt(Submap& sm1, Submap& sm2, const SE3d& init_pose) {
@@ -1191,6 +1198,9 @@ std::pair<SE3d, NdtEval>Backend::runSlidingWindowNdt(size_t kf_i, size_t kf_j) {
     //make sure sanity check is done outside, so kf_i and kf_j has sliding window
     std::shared_ptr<PointCloud> sw_l = buildSlidingWindowCloud(kf_i);
     std::shared_ptr<PointCloud> sw_r = buildSlidingWindowCloud(kf_j);
+    if (sw_l->empty() || sw_r->empty()) {
+        return {SE3d(), {std::numeric_limits<double>::infinity(), 0, 0.0}};
+    }
 
 
     IncNDT sw_ndt= (backend_config_.inc_ndt_options_);
@@ -1198,8 +1208,13 @@ std::pair<SE3d, NdtEval>Backend::runSlidingWindowNdt(size_t kf_i, size_t kf_j) {
     SE3d init_pose = key_frames_[kf_i]->loop_opti_pose_.inverse() * key_frames_[kf_j]->loop_opti_pose_;
 
     sw_ndt.SetSourceCloud(sw_r);
-    bool ok  = sw_ndt.Align(init_pose);
+    bool ok = sw_ndt.Align(init_pose);
     NdtEval eval = sw_ndt.computeScore(init_pose);
+    if (!ok || !init_pose.matrix().allFinite()) {
+        eval.score_ = std::numeric_limits<double>::infinity();
+        eval.valid_count_ = 0;
+        eval.valid_ratio_ = 0.0;
+    }
     if(!ok) {
         std::cout<< "Inc_ndt failed"<<std::endl;
     }
@@ -1215,19 +1230,15 @@ void Backend::markLoopSlidingWindow(size_t kf_i, size_t kf_j) {
     auto options = backend_config_.loop_closure_options_;
 
     int half = static_cast<int>(options.half_sw_size_);
-    int n = static_cast<int>(key_frames_.size());
-
     auto mark = [&](size_t center_id, int role) {
-        int c = static_cast<int>(center_id);
-        int lb = std::max(0, c - half);
-        int ub = std::min(n - 1, c + half);
-
-        for (int id = lb; id <= ub; ++id) {
-            auto it = key_frames_.find(static_cast<size_t>(id));
-            if (it == key_frames_.end() || !it->second) {
-                continue;
-            }
-
+        auto center = key_frames_.find(center_id);
+        if (center == key_frames_.end()) return;
+        auto first = center;
+        for (int n = 0; n < half && first != key_frames_.begin(); ++n) --first;
+        auto last = center;
+        for (int n = 0; n <= half && last != key_frames_.end(); ++n) ++last;
+        for (auto it = first; it != last; ++it) {
+            if (!it->second) continue;
             it->second->is_loop_closure_ = true;
             it->second->loop_role_ = role;
         }
@@ -1240,26 +1251,20 @@ void Backend::markLoopSlidingWindow(size_t kf_i, size_t kf_j) {
 LoopPair Backend::findLoopPairsSlidingWindow(size_t kf_id) {
     LoopClosureOptions options = backend_config_.loop_closure_options_;
     LoopPair best_pair;
-    int  diff = kf_id- options.loop_min_kf_gap_;
-    if (diff < 0) {
-        return best_pair;
-    }
-    bool found_best  =false;
-    for(int i=0; i<= static_cast<int>(kf_id)-options.loop_min_kf_gap_; i++ ) {
-        if (key_frames_.find(i) == key_frames_.end()) {
-            continue;
-        }
-        auto& kf_i  = key_frames_[i];
-        auto& kf_j  = key_frames_[kf_id];
-        if (!kf_i || !kf_j) {
-            continue;
-        }
-        int half = static_cast<int>(options.half_sw_size_);
-        int n = static_cast<int>(key_frames_.size());
-
-        if (i - half < 0 || i + half >= n) {
-            continue;
-        }
+    const auto query = key_frames_.find(kf_id);
+    if (query == key_frames_.end() || !query->second) return best_pair;
+    bool found_best = false;
+    size_t position = 0;
+    for (auto candidate = key_frames_.begin(); candidate != query; ++candidate, ++position) {
+        const size_t i = candidate->first;
+        if (kf_id - i < static_cast<size_t>(options.loop_min_kf_gap_)) continue;
+        const auto& kf_i = candidate->second;
+        const auto& kf_j = query->second;
+        if (!kf_i || !kf_j || !kf_i->loop_opti_pose_.matrix().allFinite() ||
+            !kf_j->loop_opti_pose_.matrix().allFinite()) continue;
+        const auto half = std::max(0, options.half_sw_size_);
+        if (position < static_cast<size_t>(half) ||
+            position + static_cast<size_t>(half) >= key_frames_.size()) continue;
         Vec3d pi = kf_i->loop_opti_pose_.translation();
         Vec3d pj = kf_j->loop_opti_pose_.translation();
 
@@ -1280,7 +1285,8 @@ LoopPair Backend::findLoopPairsSlidingWindow(size_t kf_id) {
         SE3d delta = res.first;
         NdtEval eval = res.second;
         //gate
-        if (!std::isfinite(eval.score_)) {
+        if (!delta.matrix().allFinite() || !std::isfinite(eval.score_) ||
+            !std::isfinite(eval.valid_ratio_)) {
             continue;
         }
 
@@ -1348,27 +1354,20 @@ SE3d Backend::keepXYAndYawOnly(const SE3d& optimized_pose,
 }
 
 void Backend::updateLoopToKf(const std::map<size_t, SE3d>& optimized_map) {
-   //need to do sanity check
-    if (optimized_map.empty()) {
-        return;
+    auto last = key_frames_.end();
+    for (const auto& pose : optimized_map) {
+        auto kf = key_frames_.find(pose.first);
+        if (kf == key_frames_.end() || !kf->second || !pose.second.matrix().allFinite()) continue;
+        kf->second->loop_opti_pose_ = keepXYAndYawOnly(pose.second, kf->second->scd_opti_pose_);
+        last = kf;
     }
-    bool has_last = false;
-    size_t last_id = 0;
-   for(auto& it : optimized_map ) {
-      size_t kf_id = it.first;
-       if (has_last && kf_id != last_id + 1) {
-           std::cout << "kf order corrupted!" << std::endl;
-       }
-      key_frames_[kf_id]->loop_opti_pose_ = keepXYAndYawOnly(it.second, key_frames_[kf_id]->fst_opti_pose_);
-      last_id = kf_id;
-       has_last = true;
-   }
-   for(size_t j = last_id+1; j<key_frames_.size(); j++) {
-       auto& kf =  key_frames_[j];
-       auto& last_kf = key_frames_[j-1];
-       SE3d delta = last_kf->scd_opti_pose_.inverse() *  kf->scd_opti_pose_;
-       kf->loop_opti_pose_ = last_kf->loop_opti_pose_*delta;
-   }
+    if (last == key_frames_.end()) return;
+    for (auto it = std::next(last); it != key_frames_.end(); ++it) {
+        if (!it->second) continue;
+        const SE3d delta = last->second->scd_opti_pose_.inverse() * it->second->scd_opti_pose_;
+        it->second->loop_opti_pose_ = last->second->loop_opti_pose_ * delta;
+        last = it;
+    }
 }
 
 void Backend::runKfLoopClosureLocalToGlobal(loop_callback callback) {
@@ -1408,7 +1407,7 @@ void Backend::runKfLoopClosureLocalToGlobal(loop_callback callback) {
     size_t last_kf_id = 0;
 
     int cnt = 0;
-    bool is_first =true;
+    std::shared_ptr<KeyFrame> previous;
 
     for (auto& it : key_frames_) {
         if (it.second) {
@@ -1417,37 +1416,30 @@ void Backend::runKfLoopClosureLocalToGlobal(loop_callback callback) {
     }
 
     for(auto it : key_frames_) {
-        cnt++;
 
         auto& kf = it.second;
-        if (!kf) {
+        if (!kf || !kf->scd_opti_pose_.matrix().allFinite()) {
             continue;
         }
+        ++cnt;
         std::cout<<"process:" << kf->id_<<std::endl;
         //Add optimization node
         PoseGraphOptimizer::Node node;
         node.id_ = kf->id_;
         node.pose_init_ = kf->loop_opti_pose_;
         node.t_ = kf->time_;
-        if (kf->rtk_valid_) {
-            node.gps_pos_ =kf->rtk_pose_.translation();
-            node.has_gps_ = true;
-        }
+        node.has_gps_ = false; // This graph uses odometry and loop constraints only.
         node_vect.push_back(node);
-        if(is_first) {
-           is_first = false;
-        }
-        else {
-            const SE3d& Ti = key_frames_[kf->id_ -1]->loop_opti_pose_;
-            const SE3d& Tj = kf->loop_opti_pose_;
+        if (previous) {
             PoseGraphOptimizer::Edge edge;
-            edge.id_i_ = kf->id_-1;
+            edge.id_i_ = previous->id_;
             edge.id_j_ = kf->id_;
-            //Todo: might change to other pose later
-            edge.T_i_j_ = Ti.inverse() * Tj;
+            // Measurements stay in the original corrected-odometry trajectory.
+            edge.T_i_j_ = previous->scd_opti_pose_.inverse() * kf->scd_opti_pose_;
             edge.info_ = odom_info;
             edge_vect.push_back(edge);
         }
+        previous = kf;
 
         //find loop pair
         if (has_last_loop_kf && kf->id_ - last_kf_id < options.loop_min_kf_gap_)
@@ -1481,7 +1473,8 @@ void Backend::runKfLoopClosureLocalToGlobal(loop_callback callback) {
         optimizer.getOptimizedPoses(optimized_poses_local);
 
         updateLoopToKf(optimized_poses_local);
-        callback(cnt);
+        for (auto& node : node_vect) node.pose_init_ = key_frames_.at(node.id_)->loop_opti_pose_;
+        if (callback) callback(cnt);
     }
     //After all local optimization down. run global optimization
     optimizer.setNodes(node_vect);
@@ -1494,7 +1487,7 @@ void Backend::runKfLoopClosureLocalToGlobal(loop_callback callback) {
     std::map<size_t, SE3d> optimized_poses_global;
     optimizer.getOptimizedPoses(optimized_poses_global);
     updateLoopToKf(optimized_poses_global);
-    callback(key_frames_.size());
+    if (callback) callback(node_vect.size());
 }
 
 void Backend::findLoopPairs(std::vector<LoopPair> &loop_vect) {

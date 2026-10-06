@@ -99,7 +99,7 @@ bool Interpolate_gps(const double qt, std::shared_ptr<KeyFrame>kf_ptr, std::map<
     SE3d pose0 = it_left->second.pose_;
     SE3d pose1 =  it_right->second.pose_;
 
-    double alpha  = qt - t0 /t1 - t0;
+    double alpha = (qt - t0) / (t1 - t0);
 
     alpha = std::max(0.0, std::min(alpha, 1.0));
     SE3d delta = pose0.inverse()*pose1;

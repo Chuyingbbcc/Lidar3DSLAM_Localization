@@ -363,10 +363,16 @@ void Frontend::saveCurrentKeyFrames() {
     for (auto& it : snapshot) {
         auto& kf = it.second;
 
-        Interpolate_gps(
+        kf->rtk_valid_ = Interpolate_gps(
             kf->time_,
             kf,
             gps_data_map_);
+        kf->rtk_inlier_ = kf->rtk_valid_;
+        if (!kf->rtk_valid_) {
+            kf->rtk_pose_ = SE3d();
+            kf->rtk_heading_valid_ = false;
+            continue;
+        }
 
         if (first_gps) {
             origin = kf->rtk_pose_.translation();
