@@ -13,6 +13,7 @@
 #include <condition_variable>
 #include <mutex>
 #include <thread>
+#include <chrono>
 #include "Slam/Frontend.h"
 #include "Slam/Optimization.h"
 
@@ -56,6 +57,10 @@ bool snapshot_sent_{false};
 uint64_t refresh_id_{0};
 
 //replay
+double replay_speed_ = 1.0;
+bool replay_clock_started_ = false;
+double replay_first_time_ = 0.0;
+std::chrono::steady_clock::time_point replay_started_;
 std::mutex replay_mutex_;
 bool replay_enabled_{true};
 uint64_t replay_refresh_id_{0};

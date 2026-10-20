@@ -46,7 +46,7 @@ class KeyFrame {
 };
 
 void writeKeyFramesToFile(const std::string &path, const std::map<size_t,std::shared_ptr<KeyFrame>>& kf_map);
-void loadKeyFrames(const std::string& path, std::map<size_t,std::shared_ptr<KeyFrame>>& kf_map);
+void loadKeyFrames(const std::string& path, std::map<size_t,std::shared_ptr<KeyFrame>>& kf_map, bool retain_missing_clouds = false);
 //
 
 class KeyFrameQueue {

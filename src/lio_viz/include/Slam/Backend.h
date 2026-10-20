@@ -76,7 +76,7 @@ class KeyFrame;
 class Backend {
 public:
     using loop_callback = std::function<void(int)>;
-    Backend(const std::string& init_path);
+    Backend(const std::string& init_path, std::function<bool()> stop_requested = {});
     ~Backend() = default;
     void neuAlign();
     void buildSubmaps();
@@ -90,6 +90,7 @@ public:
     void runKfLoopClosureLocalToGlobal(loop_callback callback);
     void runTest(loop_callback callback);
     void runCorrectNdt();
+    void writeEvaluationLoops(const std::string& path) const;
 
     std::map<size_t, std::shared_ptr<KeyFrame>> &getKeyFrames() {
         return key_frames_;
@@ -101,6 +102,9 @@ private:
 
     //backend config
     BackendConfig backend_config_;
+    std::function<bool()> stop_requested_;
+    bool stopped() const { return stop_requested_ && stop_requested_(); }
+    std::vector<LoopPair> evaluation_loops_;
 
     bool loadBackendConfig(const std::string& init_path);
     void processNewKeyFrame(std::shared_ptr<KeyFrame> kf);
@@ -164,4 +168,3 @@ private:
 
 
 };
-

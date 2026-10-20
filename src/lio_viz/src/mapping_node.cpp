@@ -8,6 +8,8 @@
 #include <iostream>
 #include <thread>
 #include <csignal>
+#include <atomic>
+#include "TerminalStopKeys.h"
 #include <Eigen/Core>
 #include <fstream>
 #include <unistd.h>
@@ -56,6 +58,7 @@ static void printPoseDebug(
 }
 
 static volatile std::sig_atomic_t g_exit_requested = 0;
+static std::atomic<bool> g_worker_stop{false};
 
 void signalHandler(int sig) {
     g_exit_requested = sig;
@@ -64,11 +67,15 @@ void signalHandler(int sig) {
 MappingNode::MappingNode(): Node("mapping_node") {
 this->declare_parameter<std::string>("mode", "mapping");
 mode_ = this->get_parameter("mode").as_string();
+replay_speed_ = declare_parameter<double>("replay_speed", 1.0);
+if (!std::isfinite(replay_speed_) || replay_speed_ <= 0)
+    throw std::invalid_argument("replay_speed must be finite and positive");
 std::cout<<"Current mode is: "<<mode_<<std::endl;
 
 pub_ = create_publisher<std_msgs::msg::String>("pcd_path", 10);
 frame_pub_ = create_publisher<lio_msgs::msg::FrameData>("frame_data", 10);
-std::string init_path  = "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/Config/config.yaml";
+const std::string init_path = declare_parameter<std::string>("config_path",
+    "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/Config/config.yaml");
 frontend_ptr_ = std::make_unique<Frontend>(init_path);
 //run frontend
 
@@ -119,7 +126,13 @@ if (mode_ == "roptimization") {
 
 else if (mode_ == "optimization") {
     writeVisualizationConfig(init_path, MapMode::optimization);
-    optimization_thread_ = std::thread([this,init_path]() {runOptimizationMode(init_path);});
+    optimization_thread_ = std::thread([this,init_path]() {
+        try { runOptimizationMode(init_path); }
+        catch (const std::exception& e) {
+            RCLCPP_ERROR(get_logger(), "Backend/save failure: %s", e.what());
+            rclcpp::shutdown();
+        }
+    });
  // Backend backend = Backend(init_path);
  // backend.buildSubmaps();
  // //backend.neuAlign();
@@ -254,8 +267,20 @@ void MappingNode::publish_frame() {
     nxt_kf_ptr = frontend_ptr_->takeNextKeyFrame();
  }
  else {
+   if ((mode_ == "rfront" || mode_ == "roptimization") &&
+       frame_pub_->get_subscription_count() == 0) { replay_clock_started_ = false; return; }
    std::lock_guard<std::mutex> lock(replay_mutex_);
    if (replay_enabled_ && !replay_kf_q_.empty()) {
+      if (mode_ == "rfront" || mode_ == "roptimization") {
+          const auto now = std::chrono::steady_clock::now();
+          if (!replay_clock_started_) {
+              replay_first_time_ = replay_kf_q_.front()->time_;
+              replay_started_ = now;
+              replay_clock_started_ = true;
+          }
+          const double elapsed = std::chrono::duration<double>(now-replay_started_).count();
+          if (elapsed < (replay_kf_q_.front()->time_-replay_first_time_) / replay_speed_) return;
+      }
       nxt_kf_ptr = replay_kf_q_.front();
       replay_kf_q_.pop();
       refresh_id = replay_refresh_id_;
@@ -355,6 +380,14 @@ void MappingNode::writeVisualizationConfig(
         cfg = YAML::Node();
     }
 
+    cfg["vis"]["show_accumulated_map"] =
+        mode == MapMode::replay_frontend || mode == MapMode::replay_optimization || mode == MapMode::frontend;
+    cfg["vis"]["show_current_frame"] = mode != MapMode::replay_optimization && mode != MapMode::replay_frontend;
+    cfg["vis"]["show_loop_pairs"] = mode == MapMode::optimization ||
+        mode == MapMode::replay_frontend || mode == MapMode::replay_optimization;
+    cfg["vis"]["dim_non_loop"] = mode == MapMode::replay_frontend || mode == MapMode::replay_optimization;
+    cfg["vis"]["hide_ground"] = mode != MapMode::replay_frontend && mode != MapMode::replay_optimization;
+
     auto makeColorNode = [](const std::array<float, 3>& c) {
         YAML::Node node;
         node.push_back(c[0]);
@@ -392,24 +425,24 @@ void MappingNode::writeVisualizationConfig(
     else if (mode == MapMode::replay_frontend) {
         setLayer(cfg["vis"]["layer1"], true, true,
                  "lidar_neu", "lidar_neu",
-                 {1, 1, 1}, {1, 0, 0});
+                 {1, 1, 1}, {0.4f, 0.4f, 0.45f});
 
-        setLayer(cfg["vis"]["layer2"], false, true,
+        setLayer(cfg["vis"]["layer2"], false, false,
                  "lidar", "rtk",
                  {0, 1, 0}, {0, 1, 0});
     }
     else if (mode == MapMode::replay_optimization) {
-        setLayer(cfg["vis"]["layer1"], false, true,
-                 "fst_optimization", "rtk",
-                 {1, 0, 1}, {1, 0, 0});
+        setLayer(cfg["vis"]["layer1"], false, false,
+                 "lidar_neu", "lidar_neu",
+                 {1, 1, 1}, {0.4f, 0.4f, 0.45f});
 
         setLayer(cfg["vis"]["layer2"], true, true,
-                 "scd_optimization", "scd_optimization",
-                 {1,1 , 1}, {0, 1, 0});
+                 "loop_optimization", "loop_optimization",
+                 {1, 1, 1}, {0.4f, 0.4f, 0.45f});
     }
     else if (mode == MapMode::optimization) {
-        setLayer(cfg["vis"]["layer1"], false, true,
-                 "loop_optimization", "rtk",
+        setLayer(cfg["vis"]["layer1"], false, false,
+                 "loop_optimization", "lidar_neu",
                  {1, 0, 1}, {1, 0, 0});
 
         setLayer(cfg["vis"]["layer2"], true, true,
@@ -532,19 +565,26 @@ void MappingNode::refreshForLoopInspection(
 }
 
 void MappingNode::runOptimizationMode(const std::string& init_path) {
-    Backend backend(init_path);
+    Backend backend(init_path, [] { return g_worker_stop.load(std::memory_order_relaxed); });
     backend.buildSubmaps();
-    backend.neuAlign();
-    backend.runKfRtkOptimization();
-    //backend.runCorrectNdt();
-    //send call back to run LoopClosure
-     backend.runKfLoopClosureLocalToGlobal(
-       [this, &backend](int cnt) {
-           refreshForLoopInspection(backend.getKeyFrames(), static_cast<size_t>(cnt));
-       }
-    );
-    const std::string kf_path = "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/output_temp/kf_output.txt";
+    try {
+        if (!g_worker_stop.load()) backend.neuAlign();
+        backend.runKfRtkOptimization();
+        //backend.runCorrectNdt();
+        backend.runKfLoopClosureLocalToGlobal([this, &backend](int count) {
+            refreshForLoopInspection(backend.getKeyFrames(), static_cast<size_t>(count));
+        });
+    } catch (const std::exception& e) {
+        RCLCPP_ERROR(get_logger(), "Backend interrupted by error: %s; saving keyframes", e.what());
+    }
+    if (backend.getKeyFrames().empty()) return; // Never replace input with an empty checkpoint.
+    const auto config = YAML::LoadFile(init_path);
+    const std::string kf_path = config["backend"]["in_kf_info_path"].as<std::string>();
     writeKeyFramesToFile(kf_path, backend.getKeyFrames());
+    backend.writeEvaluationLoops(kf_path + ".loops.txt");
+    RCLCPP_INFO(get_logger(), "Saved %zu backend keyframes to %s%s",
+        backend.getKeyFrames().size(), kf_path.c_str(),
+        g_worker_stop.load() ? " (interrupted checkpoint)" : "");
 }
 
 
@@ -553,6 +593,7 @@ int main(int argc, char **argv) {
     std::signal(SIGINT, signalHandler);
     std::signal(SIGTERM, signalHandler);
     std::signal(SIGTSTP, signalHandler);
+    TerminalStopKeys terminal_keys;
     std::shared_ptr<MappingNode> node;
     int result = 0;
     try {
@@ -560,6 +601,7 @@ int main(int argc, char **argv) {
         rclcpp::executors::SingleThreadedExecutor executor;
         executor.add_node(node);
         while (rclcpp::ok() && !g_exit_requested) {
+            if (terminal_keys.stopPressed()) { g_exit_requested = SIGINT; break; }
             executor.spin_some();
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
@@ -570,6 +612,7 @@ int main(int argc, char **argv) {
         std::cerr << "Unknown mapping node failure" << std::endl;
         result = 1;
     }
+    g_worker_stop.store(true, std::memory_order_relaxed);
     // Release backend inspection waits before joining any worker.
     rclcpp::shutdown();
     if (node) {

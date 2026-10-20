@@ -44,29 +44,34 @@ backend:
   sub_map_max_dist: 20.0
   sub_map_max_kf: 20
 vis:
+  show_accumulated_map: true
+  show_current_frame: false
+  show_loop_pairs: true
+  dim_non_loop: true
+  hide_ground: false
   layer1:
     draw_map: false
-    draw_route: true
-    map_pose: fst_optimization
-    route_pose: rtk
+    draw_route: false
+    map_pose: lidar_neu
+    route_pose: lidar_neu
     map_color:
       - 1
-      - 0
+      - 1
       - 1
     route_color:
-      - 1
-      - 0
-      - 0
+      - 0.4
+      - 0.4
+      - 0.45
   layer2:
     draw_map: true
     draw_route: true
-    map_pose: scd_optimization
-    route_pose: scd_optimization
+    map_pose: loop_optimization
+    route_pose: loop_optimization
     map_color:
       - 1
       - 1
       - 1
     route_color:
-      - 0
-      - 1
-      - 0
+      - 0.4
+      - 0.4
+      - 0.45

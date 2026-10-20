@@ -2,6 +2,8 @@
 #define OPENGL_VIS_NODE_H
 
 #include "common.h"
+#include "VideoRecorder.h"
+#include <chrono>
 
 #include <rclcpp/rclcpp.hpp>
 #include <std_msgs/msg/string.hpp>
@@ -29,7 +31,9 @@ using Point3f =Point<float,3>;
 
 struct PointVertex {
     Point3f p_ {};
-    float intensity_ =0.0f;
+    float intensity_ = -1.0f; // negative means legacy cloud without intensity
+    float loop_role_ = 0.0f;
+    float height_ = 0.0f; // height above the configured road level in sensor coordinates
 };
 
 enum class  PoseType {
@@ -100,7 +104,7 @@ private:
     void upload_points_to_gpu(const std::vector<PointVertex>& pts, GLuint vbo, bool& ready, size_t& count);
     void upload_route_to_gpu(const std::vector<glm::vec3>&route_pts, GLuint route_vbo, bool& ready, size_t& count);
 
-    void draw_points_layer(const glm::mat4 &mvp, GLuint vao, bool vbo_ready, size_t num_points, const glm::vec3& color);
+    void draw_points_layer(const glm::mat4 &mvp, GLuint vao, bool vbo_ready, size_t num_points, const glm::vec3& color, bool current_frame = false);
     void draw_route_layer(const glm::mat4& mvp, GLuint vao, bool vbo_ready, size_t num_points_route, const glm::vec3& color);
 
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr sub_;
@@ -118,6 +122,16 @@ private:
     RenderLayerConfig layer1_;
     RenderLayerConfig layer2_;
 
+    bool show_current_frame_ = true;
+    bool current_frame_override_ = false;
+    bool show_accumulated_map_ = false;
+    bool accumulated_map_override_ = false;
+    std::vector<PointVertex> current_frame_points_;
+    GLuint current_frame_vao_ = 0;
+    GLuint current_frame_vbo_ = 0;
+    bool current_frame_dirty_ = false;
+    bool current_frame_ready_ = false;
+    size_t current_frame_count_ = 0;
     std::vector<PointVertex> map_points_1_;
     std::vector<PointVertex> map_points_2_;
     //std::vector<PointVertex> loop_points_;
@@ -180,6 +194,39 @@ private:
     //GLuint loop_vbo_ = 0;
 
 
+   bool intensity_equalize_ = true;
+   std::array<float, 256> intensity_cdf_ {};
+   void loadIntensityDistribution(const std::string& keyframe_path, bool single_cloud = false);
+   std::string standalone_cloud_path_;
+   VideoRecorder recorder_;
+   std::string recording_directory_;
+   std::string recording_path_;
+   bool record_on_start_ = false;
+   int recording_fps_ = 30;
+   int recording_width_ = 0, recording_height_ = 0;
+   std::chrono::steady_clock::time_point recording_start_;
+   void toggleRecording();
+   void captureRecordingFrame(int width, int height);
+   std::string camera_mode_ = "orbit";
+   glm::mat4 driving_pose_ = glm::mat4(1.0f);
+   bool driving_pose_ready_ = false;
+   float driving_distance_ = 6.0f;
+   float driving_height_ = 2.5f;
+   float driving_lookahead_ = 12.0f;
+   std::string color_mode_ = "height_intensity";
+   float color_ground_z_ = -1.7f;
+   float intensity_min_ = 0.0f;
+   float intensity_max_ = 1.0f;
+   float point_size_ = 1.5f;
+   float display_voxel_size_ = 0.35f;
+   float local_voxel_size_ = 0.2f;
+   bool hide_ground_ = true;
+   bool hide_ground_override_ = false;
+   float ground_z_ = 0.0f;
+   bool show_loop_pairs_ = true;
+   bool dim_non_loop_ = false;
+   float non_loop_brightness_ = 0.25f;
+   std::array<std::unordered_map<PtrVoxelKey, VoxelAccum, PtrVoxelHash>, 3> display_voxels_[2];
    GLuint shader_program_ =0;
    GLuint route_shader_program_ =0;
 

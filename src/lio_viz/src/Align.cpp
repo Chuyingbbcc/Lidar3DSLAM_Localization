@@ -31,6 +31,7 @@ void IncNDT::SetSourceCloud(std::shared_ptr<PointCloud>& source) {
 }
 
 bool IncNDT::Align(SE3d & init_pose) {
+  if (stopped()) return false;
   //initial pose
   SE3d new_pose = init_pose;
 
@@ -43,6 +44,7 @@ bool IncNDT::Align(SE3d & init_pose) {
 
   //iterate num_iterations
   for(int i=0; i<opt_.max_iterations_; i++) {
+    if (stopped()) return false;
     std::vector<uint8_t>effect_pts(total_count, 0);
     std::vector<Eigen::Matrix<double, 3,6>>jacobians(total_count);
     std::vector<Vec3d>errors(total_count);
@@ -52,6 +54,7 @@ bool IncNDT::Align(SE3d & init_pose) {
     //iterate each points
 #pragma omp parallel for schedule(static)
     for(int i=0; i<index.size(); i++) {
+       if (stopped()) continue;
        auto p = ToVec3d((*source_ptr_)[i]);
        Vec3d q = new_pose * p;
 
@@ -92,6 +95,7 @@ bool IncNDT::Align(SE3d & init_pose) {
         }
       }
     }
+    if (stopped()) return false;
     //accumulate H and e
     int effective_num  =0 ;
     double total_res =0;
@@ -99,6 +103,7 @@ bool IncNDT::Align(SE3d & init_pose) {
     Vec6d err = Vec6d::Zero();
 
     for(int idx =0; idx < effect_pts.size(); idx++) {
+      if (idx % 1024 == 0 && stopped()) return false;
       if (!effect_pts[idx]) {
         continue;
       }
@@ -294,12 +299,12 @@ NdtEval IncNDT::computeScore(const SE3d& pose) const {
     valid_count++;
   }
 
+  out.valid_count_ = valid_count;
+  out.valid_ratio_ = double(valid_count) / double(source_ptr_->size());
   if (valid_count < 30) {
     std::cout<< "there are no enough points!"<<std::endl;
     return out;
   }
-  out.valid_count_ = valid_count;
-  out.valid_ratio_ = double(valid_count) / double(source_ptr_->size());
   out.score_ = total_score / static_cast<double>(valid_count);
   return out;
 }

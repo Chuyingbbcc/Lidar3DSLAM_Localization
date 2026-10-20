@@ -46,6 +46,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(tf2_msgs REQUIRED)
 
 # OpenGL & GLFW
+find_package(JPEG REQUIRED)
 find_package(OpenGL REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GLFW REQUIRED glfw3)
@@ -125,6 +126,7 @@ ament_target_dependencies(opengl_vis_node rclcpp std_msgs  geometry_msgs
         lio_msgs)
 target_link_libraries(opengl_vis_node
         glad
+        JPEG::JPEG
         OpenGL::GL
         ${GLFW_LIBRARIES}
         glm::glm
@@ -140,6 +142,10 @@ target_link_libraries(mapping_node
         lio_core
 )
 
+add_executable(evaluate_system src/evaluate_system.cpp)
+set_property(TARGET evaluate_system PROPERTY CXX_STANDARD 17)
+target_link_libraries(evaluate_system lio_core)
+
 #install(TARGETS
 #        opengl_vis_node
 # mapping_node
@@ -153,6 +159,7 @@ install(TARGETS
         pose_graph_optimizer
         opengl_vis_node
         mapping_node
+        evaluate_system
         ARCHIVE DESTINATION lib
         LIBRARY DESTINATION lib
         RUNTIME DESTINATION lib/${PROJECT_NAME}
@@ -166,6 +173,14 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_lio_core test/test_io.cpp)
   target_link_libraries(test_lio_core lio_core Eigen3::Eigen)
+  ament_add_gtest(test_shutdown test/test_shutdown.cpp)
+  target_link_libraries(test_shutdown lio_core Eigen3::Eigen)
+  ament_add_gtest(test_video_recorder test/test_video_recorder.cpp)
+  target_link_libraries(test_video_recorder JPEG::JPEG)
+  ament_add_gtest(test_intensity test/test_intensity.cpp)
+  target_link_libraries(test_intensity lio_core Eigen3::Eigen)
+  ament_add_gtest(test_evaluation test/test_evaluation.cpp)
+  target_link_libraries(test_evaluation lio_core Eigen3::Eigen)
 endif()
 
 

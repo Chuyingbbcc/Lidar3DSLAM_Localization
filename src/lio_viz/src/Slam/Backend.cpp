@@ -15,6 +15,10 @@
 #include <algorithm>   // std::sort, std::min, std::max
 #include <set>         // std::set
 #include <utility>     // std::pair
+#include <fstream>
+#include <iomanip>
+#include <cstdio>
+#include <stdexcept>
 
 #include  "Submap.h"
 #include "Align.h"
@@ -108,7 +112,8 @@ bool Backend::loadBackendConfig(const std::string &init_path) {
     }
 }
 
-Backend::Backend(const std::string &init_path) {
+Backend::Backend(const std::string &init_path, std::function<bool()> stop_requested)
+    : stop_requested_(std::move(stop_requested)) {
   loadBackendConfig(init_path);
   submap_manager_ptr_ = std::make_unique<SubmapManager>(backend_config_.submap_size_);
 }
@@ -124,7 +129,7 @@ void Backend::processNewKeyFrame(std::shared_ptr<KeyFrame> kf) {
 }
 
 void Backend::buildSubmaps() {
-  loadKeyFrames(backend_config_.in_kf_info_path_, key_frames_);
+  loadKeyFrames(backend_config_.in_kf_info_path_, key_frames_, true);
   size_t last_id = 0;
   bool first = true;
   for (auto it : key_frames_) {
@@ -316,6 +321,7 @@ void Backend::runSubmapInsideOptimization() {
 // }
 
 void Backend::runKfRtkOptimization() {
+    if (stopped()) return;
     // A failed or incomplete solve must retain the current aligned input.
     for (const auto& entry : key_frames_) {
         if (!entry.second) continue;
@@ -325,6 +331,7 @@ void Backend::runKfRtkOptimization() {
     std::vector<PoseGraphOptimizer::Node>node_vect;
     std::vector<PoseGraphOptimizer::Edge>edge_vect;
 
+    if (stopped()) return;
     buildKfGraphNodesAndEdges(node_vect, edge_vect);
     std::cout
     << "\n========== Lv2 Input ==========\n"
@@ -336,6 +343,7 @@ void Backend::runKfRtkOptimization() {
     PoseGraphOptimizer optimizer(OptimizationStage::KF_RTK_OPTI);
     optimizer.setNodes(node_vect);
     optimizer.setEdges(edge_vect);
+    optimizer.setStopRequested(stop_requested_);
     optimizer.setGpsInfo(gps_info);
     bool ok = optimizer.optimize(20);
     if(!ok) {
@@ -1204,11 +1212,14 @@ std::pair<SE3d, NdtEval>Backend::runSlidingWindowNdt(size_t kf_i, size_t kf_j) {
 
 
     IncNDT sw_ndt= (backend_config_.inc_ndt_options_);
+    if (stopped()) return {SE3d(), NdtEval{}};
+    sw_ndt.setStopRequested(stop_requested_);
     sw_ndt.AddCloud(sw_l);
     SE3d init_pose = key_frames_[kf_i]->loop_opti_pose_.inverse() * key_frames_[kf_j]->loop_opti_pose_;
 
     sw_ndt.SetSourceCloud(sw_r);
     bool ok = sw_ndt.Align(init_pose);
+    if (stopped()) return {SE3d(), NdtEval{}};
     NdtEval eval = sw_ndt.computeScore(init_pose);
     if (!ok || !init_pose.matrix().allFinite()) {
         eval.score_ = std::numeric_limits<double>::infinity();
@@ -1256,6 +1267,7 @@ LoopPair Backend::findLoopPairsSlidingWindow(size_t kf_id) {
     bool found_best = false;
     size_t position = 0;
     for (auto candidate = key_frames_.begin(); candidate != query; ++candidate, ++position) {
+        if (stopped()) return LoopPair{};
         const size_t i = candidate->first;
         if (kf_id - i < static_cast<size_t>(options.loop_min_kf_gap_)) continue;
         const auto& kf_i = candidate->second;
@@ -1371,6 +1383,8 @@ void Backend::updateLoopToKf(const std::map<size_t, SE3d>& optimized_map) {
 }
 
 void Backend::runKfLoopClosureLocalToGlobal(loop_callback callback) {
+    if (stopped()) return;
+    evaluation_loops_.clear();
     if (key_frames_.empty()) {
         return;
     }
@@ -1401,6 +1415,7 @@ void Backend::runKfLoopClosureLocalToGlobal(loop_callback callback) {
     gps_info(0,0) = 0.0;
     gps_info(1,1) = 0.0;
     gps_info(2,2) = 0.0;
+    optimizer.setStopRequested(stop_requested_);
     optimizer.setGpsInfo(gps_info);
 
     bool has_last_loop_kf = false;
@@ -1416,6 +1431,7 @@ void Backend::runKfLoopClosureLocalToGlobal(loop_callback callback) {
     }
 
     for(auto it : key_frames_) {
+        if (stopped()) return;
 
         auto& kf = it.second;
         if (!kf || !kf->scd_opti_pose_.matrix().allFinite()) {
@@ -1457,10 +1473,12 @@ void Backend::runKfLoopClosureLocalToGlobal(loop_callback callback) {
         loop_edge.T_i_j_ = best_pair.T_i_j_init_;
         loop_edge.info_ = loop_info;
         edge_vect.push_back(loop_edge);
+        evaluation_loops_.push_back(best_pair);
 
         //
         markLoopSlidingWindow(best_pair.kf_idx_i_, best_pair.kf_idx_j_);
 
+        if (stopped()) return;
         //optimize current edge and node
         optimizer.setEdges(edge_vect);
         optimizer.setNodes(node_vect);
@@ -1476,6 +1494,7 @@ void Backend::runKfLoopClosureLocalToGlobal(loop_callback callback) {
         for (auto& node : node_vect) node.pose_init_ = key_frames_.at(node.id_)->loop_opti_pose_;
         if (callback) callback(cnt);
     }
+    if (stopped()) return;
     //After all local optimization down. run global optimization
     optimizer.setNodes(node_vect);
     optimizer.setEdges(edge_vect);
@@ -1488,6 +1507,24 @@ void Backend::runKfLoopClosureLocalToGlobal(loop_callback callback) {
     optimizer.getOptimizedPoses(optimized_poses_global);
     updateLoopToKf(optimized_poses_global);
     if (callback) callback(node_vect.size());
+}
+
+void Backend::writeEvaluationLoops(const std::string& path) const {
+    const auto temporary = path + ".tmp";
+    std::ofstream out(temporary);
+    out << "# lio_evaluation_loops_v1: id_i id_j tx ty tz qx qy qz qw ndt_score\n";
+    out << std::setprecision(18);
+    for (const auto& loop : evaluation_loops_) {
+        const auto t = loop.T_i_j_init_.translation();
+        const auto q = loop.T_i_j_init_.unit_quaternion();
+        out << loop.kf_idx_i_ << ' ' << loop.kf_idx_j_ << ' '
+            << t.x() << ' ' << t.y() << ' ' << t.z() << ' '
+            << q.x() << ' ' << q.y() << ' ' << q.z() << ' ' << q.w()
+            << ' ' << loop.ndt_score_ << '\n';
+    }
+    out.close();
+    if (!out || std::rename(temporary.c_str(), path.c_str()) != 0)
+        throw std::runtime_error("Cannot write evaluation loop constraints: " + path);
 }
 
 void Backend::findLoopPairs(std::vector<LoopPair> &loop_vect) {

@@ -32,7 +32,7 @@ void PointPicker::clear() {
     dirty_ = true;
 }
 
-inline void PointPicker::build() {
+void PointPicker::build() {
     //Todo:: later change  it to kd_tree
     dirty_ = false;
 }

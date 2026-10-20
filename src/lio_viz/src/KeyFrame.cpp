@@ -79,7 +79,7 @@ void writeKeyFramesToFile(const std::string &path, const std::map<size_t,std::sh
    }
 }
 
-void loadKeyFrames(const std::string &path, std::map<size_t, std::shared_ptr<KeyFrame>> &kf_map) {
+void loadKeyFrames(const std::string &path, std::map<size_t, std::shared_ptr<KeyFrame>> &kf_map, bool retain_missing_clouds) {
     std::ifstream out(path);
     if (!out) {
         std::cerr << "Failed to open file\n";
@@ -100,7 +100,7 @@ void loadKeyFrames(const std::string &path, std::map<size_t, std::shared_ptr<Key
         //std::cout<<kf->id_<<std::endl;
         if (!loadPointCloudFromFile(kf->cloud_path_, kf->cloud_ptr_)) {
              std::cerr << "Failed to load keypoints from file" << kf->cloud_path_<<"\n";
-             continue;
+             if (!retain_missing_clouds) continue;
         }
         kf->cloud_size_ = kf->cloud_ptr_->size();
         kf_map.emplace(kf->id_, kf);

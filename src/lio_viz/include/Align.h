@@ -5,6 +5,7 @@
 #ifndef ALIGN_H
 #define ALIGN_H
 #include <memory>
+#include <functional>
 #include <string>
 #include "point_cloud_utils.h"
 #include "DataType.h"
@@ -56,11 +57,14 @@ public:
     ~IncNDT() override = default;
 
     bool Align(SE3d & init_pose) override;
+    void setStopRequested(std::function<bool()> stop) { stop_requested_ = std::move(stop); }
     void SetSourceCloud(std::shared_ptr<PointCloud>& source) override;
     void AddCloud(std::shared_ptr<PointCloud>& target) override;
     NdtEval computeScore(const SE3d& pose) const;
 
   private:
+    std::function<bool()> stop_requested_;
+    bool stopped() const { return stop_requested_ && stop_requested_(); }
     bool first_scan_processed = true;
     IncNDTOptions opt_;
     std::shared_ptr<PointCloud> source_ptr_;

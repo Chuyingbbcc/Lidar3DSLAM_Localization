@@ -3,6 +3,7 @@
 //
 #include "Slam/Optimization.h"
 #include <g2o/core/sparse_optimizer.h>
+#include <g2o/core/hyper_graph_action.h>
 #include <g2o/core/block_solver.h>
 #include <g2o/core/base_unary_edge.h>
 #include <g2o/core/base_binary_edge.h>
@@ -57,6 +58,7 @@ void PoseGraphOptimizer::setEdges(const std::vector<Edge>& edges)
 }
 
 bool PoseGraphOptimizer::optimize(int iterations) {
+    if (stop_requested_ && stop_requested_()) return false;
     if (nodes_.empty()) {
         return false;
     }
@@ -67,7 +69,22 @@ bool PoseGraphOptimizer::optimize(int iterations) {
     addRelativeEdges();
     addGpsEdges();
     optimizer_ ->initializeOptimization();
+    // The stop flag is read and written by the solver thread only.
+    struct StopAction : g2o::HyperGraphAction {
+        std::function<bool()> check;
+        bool stop = false;
+        g2o::HyperGraphAction* operator()(const g2o::HyperGraph*, Parameters*) override {
+            stop = check && check();
+            return this;
+        }
+    } action;
+    action.check = stop_requested_;
+    optimizer_->setForceStopFlag(&action.stop);
+    optimizer_->addPreIterationAction(&action);
     int iters = optimizer_ -> optimize(iterations);
+    optimizer_->removePreIterationAction(&action);
+    optimizer_->setForceStopFlag(nullptr);
+    if (action.stop) return false;
     return iters >0;
 }
 
