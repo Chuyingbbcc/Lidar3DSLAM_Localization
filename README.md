@@ -1,7 +1,7 @@
 
 # LiDAR-Inertial SLAM System
 
-A ROS 2 LiDAR-inertial SLAM system combining incremental Normal Distributions Transform (IncNDT) scan registration with an Error-State Kalman Filter (ESKF). A g2o back end incorporates GPS/RTK observations and loop closures to reduce accumulated drift and improve global consistency.
+A ROS 2 LiDAR-inertial SLAM system combining incremental Normal Distributions Transform (IncNDT) scan registration with an Error-State Kalman Filter (ESKF). A g2o backend incorporates GPS/RTK observations and loop closures to reduce accumulated drift and improve global consistency.
 
 The map is organized into keyframes, submaps, and a global map. An OpenGL viewer displays point clouds and trajectories during mapping, replay, and optimization. The current workflow processes recorded ROS 2 bags offline.
 
