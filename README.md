@@ -39,45 +39,136 @@ Orange shows the frontend route; cyan shows the optimized route. The second view
 
 `mapping_node` runs the front end or back end and publishes keyframe metadata through `lio_msgs/FrameData`. `opengl_vis_node` loads the saved clouds and renders the selected pose layers.
 
-## Technical overview
+## Technical details
 
-### Point cloud preprocessing
+The pipeline combines point-cloud preprocessing, incremental scan registration, LiDAR–IMU fusion, keyframe and submap management, GPS alignment, and global pose graph optimization.
 
-Voxel downsampling replaces points within each voxel with their centroid, reducing density while retaining scene geometry. The current implementation filters points outside an axis-aligned region: X and Y within ±40 m, and Z between −1 m and 5 m. These bounds reflect the code; the draft's proposed 1–20 m radial filter is not the current implementation.
+### 1. Point cloud preprocessing
 
-### Incremental NDT
+**Voxel downsampling.** Each input point is assigned to a spatial voxel. Points in the same voxel are replaced by their centroid, reducing point-cloud density while preserving the scene's overall geometry.
 
-The local map stores a mean and covariance for each sufficiently populated voxel. A transformed scan point is associated with its voxel and, optionally, the six neighboring voxels. Registration minimizes the Mahalanobis residual between the point and voxel distribution, rejecting associations above an outlier threshold.
+**Geometric filtering.** Before scan matching, the current implementation retains points with X and Y within ±40 m and Z between −1 m and 5 m.
 
-For a source point $p$, pose $(R,t)$, and voxel mean $\mu$:
+### 2. Incremental NDT — scan registration and local-map update
+
+#### Voxel map
+
+The local map is divided into fixed-size voxels. Each sufficiently populated voxel stores the mean $\mu$ and covariance $\Sigma$ of its points. The inverse covariance acts as an information matrix, weighting registration errors according to local geometry.
+
+#### Scan registration
+
+Starting from an initial pose $(R,t)$, a source point $p$ is transformed into the map frame. The corresponding voxel and, optionally, its six neighboring voxels provide candidate associations:
 
 $$
 q = Rp+t, \qquad e=q-\mu, \qquad E=e^T\Sigma^{-1}e.
 $$
 
-Gauss–Newton estimates a six-dimensional pose correction. With correction ordering $\Delta x=[\Delta\theta^T,\Delta t^T]^T$, the implementation uses:
+Associations whose Mahalanobis error $E$ exceeds the outlier threshold are rejected.
+
+#### Gauss–Newton optimization
+
+Registration estimates a six-dimensional pose correction. For the ordering $\Delta x=[\Delta\theta^T,\Delta t^T]^T$, the implementation uses:
 
 $$
 J=\begin{bmatrix}-R[p]_\times & R\end{bmatrix}.
 $$
 
-The pose is updated on SE(3) until convergence or the iteration limit. Aligned scans update only affected map voxels. Covariance singular values are clamped before inversion, and a fixed-capacity LRU cache bounds the active voxel map.
+Valid associations contribute to the normal equations:
 
-### LiDAR–IMU fusion
+$$
+H=\sum J^T\Sigma^{-1}J, \qquad
+b=-\sum J^T\Sigma^{-1}e, \qquad
+H\Delta x=b.
+$$
 
-The ESKF maintains position, velocity, orientation, accelerometer bias, gyroscope bias, and gravity, with an 18-dimensional error state. Bias-corrected IMU measurements propagate the nominal state and covariance. NDT pose observations supply measurement corrections, which are injected into the nominal state before resetting the error state.
+The correction updates the pose on SE(3). Association and optimization repeat until the correction falls below the convergence threshold or the iteration limit is reached.
 
-### Keyframes and submaps
+#### Incremental map update
 
-Translation and rotation thresholds select keyframes. Their point clouds and pose metadata are saved locally, then grouped into submaps for back-end registration and optimization. Configuration controls keyframe spacing, submap size, and registration settings.
+After registration, the aligned scan is inserted into the local map. Only affected voxels have their statistics updated. Small covariance singular values are clamped before inversion for numerical stability, and a fixed-capacity LRU cache bounds the active voxel map.
 
-### GPS/RTK alignment
+### 3. ESKF sensor fusion — LiDAR–IMU state estimation
 
-GDAL projects latitude and longitude into UTM coordinates. The local odometry route is aligned with the GPS/RTK route using a robust planar rigid transform: SVD estimates yaw and XY translation, residual-based rejection refines the correspondences, and the median height difference estimates the vertical offset.
+The Error-State Kalman Filter combines high-frequency IMU propagation with pose corrections from NDT registration. Its nominal state contains position, velocity, orientation, accelerometer bias, gyroscope bias, and gravity:
 
-### Pose graph and loop closure
+$$
+x=\{p,v,R,b_a,b_g,g\}, \qquad
+\delta x=[\delta p^T,\delta v^T,\delta\theta^T,\delta b_a^T,\delta b_g^T,\delta g^T]^T.
+$$
 
-The g2o graph combines relative odometry edges, GPS position constraints, and validated loop-closure edges. Loop candidates are selected by spatial proximity; a local search evaluates nearby keyframe pairs using NDT registration. The graph uses Levenberg–Marquardt optimization and Huber robust kernels to reduce the influence of outlier constraints.
+The error state has 18 dimensions.
+
+#### IMU prediction
+
+Bias-corrected measurements $\hat a=a_m-b_a$ and $\hat\omega=\omega_m-b_g$ propagate the nominal state over a time step $\Delta t$:
+
+$$
+\begin{aligned}
+R_{k+1} &= R_k\operatorname{Exp}(\hat\omega\Delta t), \\
+v_{k+1} &= v_k+(R_k\hat a+g)\Delta t, \\
+p_{k+1} &= p_k+v_k\Delta t+\tfrac12(R_k\hat a+g)\Delta t^2.
+\end{aligned}
+$$
+
+The covariance is propagated using the linearized error dynamics and process noise.
+
+#### LiDAR correction and error reset
+
+The registered LiDAR pose is compared with the predicted pose to form a position and orientation residual $r$. With measurement Jacobian $H$ and measurement-noise covariance $R_m$, the Kalman update is:
+
+$$
+K=P^-H^T(HP^-H^T+R_m)^{-1}, \qquad \delta x=Kr.
+$$
+
+Position, velocity, biases, and gravity receive additive corrections; orientation receives a rotation correction through $R\leftarrow R\operatorname{Exp}(\delta\theta)$. The filter updates the covariance and resets the error state around zero before the next prediction cycle.
+
+### 4. Keyframe and submap management
+
+Translation and rotation thresholds select keyframes from the estimated trajectory. Keyframe point clouds and pose metadata are saved locally, then grouped into submaps for back-end registration and optimization. This hierarchy supports map management at keyframe, submap, and global-map levels.
+
+### 5. GPS integration — coordinate conversion and route alignment
+
+GDAL projects GPS/RTK latitude and longitude into UTM coordinates. A robust planar rigid transform aligns the local odometry trajectory with the GPS/RTK route, estimating yaw and XY translation separately from the vertical offset.
+
+#### Planar alignment
+
+Paired odometry and GPS/RTK positions are centered. SVD of their cross-covariance estimates the planar rotation, with translation recovered from the trajectory centroids:
+
+$$
+p_{xy}^{\mathrm{gps}}=R_{xy}p_{xy}^{\mathrm{odom}}+t_{xy}.
+$$
+
+#### Robust refinement and height alignment
+
+A minimum-motion threshold removes spatially redundant correspondences. Alignment residuals identify outliers; the transform is re-estimated from the remaining inliers. The vertical offset is the median paired height difference:
+
+$$
+\Delta z=\operatorname{median}_i(z_i^{\mathrm{gps}}-z_i^{\mathrm{odom}}).
+$$
+
+The aligned GPS observations provide global position constraints for the back end.
+
+### 6. Pose graph optimization and loop closure
+
+Each keyframe is a pose vertex $X_i\in SE(3)$. The g2o graph combines three constraint types:
+
+- **Odometry:** relative transformations between consecutive keyframes.
+- **GPS:** global position observations associated with keyframes.
+- **Loop closure:** relative transformations between revisited keyframes.
+
+#### Loop candidate validation
+
+Spatial proximity identifies potential revisits. A local sliding-window search evaluates nearby keyframe pairs using NDT registration, and a validated pair supplies an additional loop-closure edge.
+
+#### Global optimization
+
+The graph minimizes weighted residuals across the odometry, GPS, and loop constraints:
+
+$$
+X^*=\arg\min_X\sum_{c\in\mathcal C}\rho(e_c^T\Omega_c e_c),
+$$
+
+where $\mathcal C$ is the constraint set, $e_c$ is a constraint residual, $\Omega_c$ is its information matrix, and $\rho$ denotes a Huber robust kernel. Levenberg–Marquardt optimization adjusts the keyframe poses to reduce accumulated drift and improve global consistency.
 
 ## Dataset and evaluation
 
@@ -103,7 +194,6 @@ Evaluation focuses on **relative-pose and point-cloud consistency**, without com
 
 The run produced a complete set of saved keyframe clouds over a 3.07 km estimated route. Loop optimization reduced translation residual RMSE against 12 accepted loop measurements by **69.7%**, from 2.355 m to 0.713 m. Sampled adjacent-cloud matching retained approximately **90% coverage** after optimization. These results support operation of the mapping, saving, and loop-optimization pipeline; rotation residuals show no improvement from the loop stage. Cloud checks sample every tenth adjacent pair and use saved relative poses without rerunning registration. One optimized pair has insufficient matches. These are internal consistency checks, not independent accuracy measurements.
 
-See [evaluation details and commands](src/lio_viz/docs/evaluation.md).
 
 ## Main challenges
 
