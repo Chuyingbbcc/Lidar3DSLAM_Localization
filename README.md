@@ -104,7 +104,7 @@ Bias-corrected measurements $\hat a=a_m-b_a$ and $\hat\omega=\omega_m-b_g$ propa
 
 $$
 \begin{aligned}
-R_{k+1} &= R_k\operatorname{Exp}(\hat\omega\Delta t), \\
+R_{k+1} &= R_k\mathrm{Exp}(\hat\omega\Delta t), \\
 v_{k+1} &= v_k+(R_k\hat a+g)\Delta t, \\
 p_{k+1} &= p_k+v_k\Delta t+\tfrac12(R_k\hat a+g)\Delta t^2.
 \end{aligned}
@@ -120,7 +120,7 @@ $$
 K=P^-H^T(HP^-H^T+R_m)^{-1}, \qquad \delta x=Kr.
 $$
 
-Position, velocity, biases, and gravity receive additive corrections; orientation receives a rotation correction through $R\leftarrow R\operatorname{Exp}(\delta\theta)$. The filter updates the covariance and resets the error state around zero before the next prediction cycle.
+Position, velocity, biases, and gravity receive additive corrections; orientation receives a rotation correction through $R\leftarrow R\mathrm{Exp}(\delta\theta)$. The filter updates the covariance and resets the error state around zero before the next prediction cycle.
 
 ### 4. Keyframe and submap management
 
@@ -143,7 +143,7 @@ $$
 A minimum-motion threshold removes spatially redundant correspondences. Alignment residuals identify outliers; the transform is re-estimated from the remaining inliers. The vertical offset is the median paired height difference:
 
 $$
-\Delta z=\operatorname{median}_i(z_i^{\mathrm{gps}}-z_i^{\mathrm{odom}}).
+\Delta z=\mathrm{median}_i(z_i^{\mathrm{gps}}-z_i^{\mathrm{odom}}).
 $$
 
 The aligned GPS observations provide global position constraints for the back end.
