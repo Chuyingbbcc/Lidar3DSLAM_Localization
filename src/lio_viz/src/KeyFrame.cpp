@@ -1,3 +1,5 @@
+#include <cstdio>
+#include <stdexcept>
 //
 // Created by chuchu on 3/10/26.
 //
@@ -63,17 +65,21 @@ void KeyFrame::read(std::istream &is) {
 }
 
 void writeKeyFramesToFile(const std::string &path, const std::map<size_t,std::shared_ptr<KeyFrame>>& kf_map) {
-   std::ofstream os(path,  std::ios::out|std::ios::trunc);
+   const std::string temporary_path = path + ".tmp";
+   std::ofstream os(temporary_path, std::ios::out|std::ios::trunc);
    if (!os.is_open()) {
-      return;
+      throw std::runtime_error("Cannot open keyframe output: " + temporary_path);
    }
    for(auto& it : kf_map) {
      it.second->write(os);
    }
    os.close();
+   if (!os || std::rename(temporary_path.c_str(), path.c_str()) != 0) {
+      throw std::runtime_error("Cannot complete keyframe output: " + path);
+   }
 }
 
-void loadKeyFrames(const std::string &path, std::map<size_t, std::shared_ptr<KeyFrame>> &kf_map) {
+void loadKeyFrames(const std::string &path, std::map<size_t, std::shared_ptr<KeyFrame>> &kf_map, bool retain_missing_clouds) {
     std::ifstream out(path);
     if (!out) {
         std::cerr << "Failed to open file\n";
@@ -94,7 +100,7 @@ void loadKeyFrames(const std::string &path, std::map<size_t, std::shared_ptr<Key
         //std::cout<<kf->id_<<std::endl;
         if (!loadPointCloudFromFile(kf->cloud_path_, kf->cloud_ptr_)) {
              std::cerr << "Failed to load keypoints from file" << kf->cloud_path_<<"\n";
-             continue;
+             if (!retain_missing_clouds) continue;
         }
         kf->cloud_size_ = kf->cloud_ptr_->size();
         kf_map.emplace(kf->id_, kf);
@@ -127,7 +133,16 @@ void KeyFrameQueue::stop() {
        std::lock_guard<std::mutex> lock(mtx_);
        stop_requested_ =true;
     }
+    cv_.notify_all();
 }
 
 
 
+
+bool KeyFrameQueue::try_pop(std::shared_ptr<KeyFrame>& kf) {
+    std::lock_guard<std::mutex> lock(mtx_);
+    if (q_.empty()) return false;
+    kf = q_.front();
+    q_.pop();
+    return true;
+}

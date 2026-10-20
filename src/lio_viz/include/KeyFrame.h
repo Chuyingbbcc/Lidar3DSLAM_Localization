@@ -46,12 +46,13 @@ class KeyFrame {
 };
 
 void writeKeyFramesToFile(const std::string &path, const std::map<size_t,std::shared_ptr<KeyFrame>>& kf_map);
-void loadKeyFrames(const std::string& path, std::map<size_t,std::shared_ptr<KeyFrame>>& kf_map);
+void loadKeyFrames(const std::string& path, std::map<size_t,std::shared_ptr<KeyFrame>>& kf_map, bool retain_missing_clouds = false);
 //
 
 class KeyFrameQueue {
 public:
     void push(std::shared_ptr<KeyFrame> kf);
+    bool try_pop(std::shared_ptr<KeyFrame>& kf);
     bool wait_and_pop(std::shared_ptr<KeyFrame>& kf);
     void stop();
 private:

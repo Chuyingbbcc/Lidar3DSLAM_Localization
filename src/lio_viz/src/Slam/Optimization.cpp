@@ -3,6 +3,7 @@
 //
 #include "Slam/Optimization.h"
 #include <g2o/core/sparse_optimizer.h>
+#include <g2o/core/hyper_graph_action.h>
 #include <g2o/core/block_solver.h>
 #include <g2o/core/base_unary_edge.h>
 #include <g2o/core/base_binary_edge.h>
@@ -33,7 +34,9 @@ class EdgeSE3GPS: public g2o::BaseUnaryEdge<3, Vec3d, g2o::VertexSE3> {
 
     void linearizeOplus() override {
        _jacobianOplusXi.setZero();
-       _jacobianOplusXi.block<3,3>(0,0) = Mat3d::Identity();
+       const auto* v = static_cast<const g2o::VertexSE3*>(_vertices[0]);
+       // VertexSE3 applies right increments: t_new = t + R * delta_t.
+       _jacobianOplusXi.block<3,3>(0,0) = v->estimate().rotation();
     }
     bool read(std::istream&) override { return false; }
     bool write(std::ostream&) const override { return false; }
@@ -55,6 +58,7 @@ void PoseGraphOptimizer::setEdges(const std::vector<Edge>& edges)
 }
 
 bool PoseGraphOptimizer::optimize(int iterations) {
+    if (stop_requested_ && stop_requested_()) return false;
     if (nodes_.empty()) {
         return false;
     }
@@ -65,7 +69,22 @@ bool PoseGraphOptimizer::optimize(int iterations) {
     addRelativeEdges();
     addGpsEdges();
     optimizer_ ->initializeOptimization();
+    // The stop flag is read and written by the solver thread only.
+    struct StopAction : g2o::HyperGraphAction {
+        std::function<bool()> check;
+        bool stop = false;
+        g2o::HyperGraphAction* operator()(const g2o::HyperGraph*, Parameters*) override {
+            stop = check && check();
+            return this;
+        }
+    } action;
+    action.check = stop_requested_;
+    optimizer_->setForceStopFlag(&action.stop);
+    optimizer_->addPreIterationAction(&action);
     int iters = optimizer_ -> optimize(iterations);
+    optimizer_->removePreIterationAction(&action);
+    optimizer_->setForceStopFlag(nullptr);
+    if (action.stop) return false;
     return iters >0;
 }
 
@@ -198,9 +217,7 @@ void PoseGraphOptimizer::addRelativeEdges() {
     }
 }
 void PoseGraphOptimizer::setGpsInfo(Mat3d& gps_info) {
-   gps_info_(0,0) =gps_info(0,0);
-   gps_info_(1,1) =gps_info(1,1);
-   gps_info_(2,2) =gps_info(2,2);
+   gps_info_ = gps_info;
 }
 void PoseGraphOptimizer::addGpsEdges() {
     if (!optimizer_) {
@@ -208,7 +225,7 @@ void PoseGraphOptimizer::addGpsEdges() {
     }
     for(size_t i=0; i<nodes_.size(); ++i) {
        const auto& node = nodes_[i];
-       if(!node.has_gps_) {
+       if(!node.has_gps_ || !node.gps_pos_.allFinite()) {
            continue;
        }
        auto* edge = new EdgeSE3GPS();

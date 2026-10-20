@@ -4,6 +4,7 @@
 #pragma once
 #include "DataType.h"
 #include <vector>
+#include <functional>
 #include <memory>
 #include <map>
 
@@ -24,7 +25,7 @@ public:
         double t_;
         SE3d pose_init_;
         bool has_gps_ = true;
-        Vec3d gps_pos_;
+        Vec3d gps_pos_ = Vec3d::Zero();
     };
     struct Edge {
        size_t id_i_;
@@ -39,15 +40,17 @@ public:
     void setEdges(const std::vector<Edge>& edges);
     void setGpsInfo(Mat3d& gps_info);
     bool optimize(int iterations = 20);
+    void setStopRequested(std::function<bool()> stop) { stop_requested_ = std::move(stop); }
     void getOptimizedPoses(std::map<size_t,SE3d >& poses_map);
 private:
+    std::function<bool()> stop_requested_;
     std::vector<Node> nodes_;
     std::vector<Edge> edges_;
     std::vector<SE3d> optimized_poses_;
     std::unique_ptr<g2o::SparseOptimizer> optimizer_;
     OptimizationStage stage_;
 
-    Mat3d gps_info_;
+    Mat3d gps_info_ = Mat3d::Zero();
 
     bool buildOptimizer();
     void addVertices();

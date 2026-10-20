@@ -4,6 +4,7 @@
 
 #pragma once
 #include <memory>
+#include <exception>
 
 #include "Lio/thread_pool.h"
 #include "Lio/LidarPostProcessing.h"
@@ -53,7 +54,11 @@ public:
     void stopDrain();
     void stopNow();
     void start();
+    void rethrowWorkerFailure();
 private:
+    void recordWorkerFailure();
+    std::mutex failure_mutex_;
+    std::exception_ptr worker_failure_;
     double watermark() const;
     ThreadPool thread_pool_;
     DoneQueue<PointCloud> dq_;

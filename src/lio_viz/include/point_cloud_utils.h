@@ -335,7 +335,10 @@ inline bool pc2ToPointCloudXYZIT(
     bool skip_nan = true)
 {
     out.clear();
-    if (msg_ptr->point_step == 0) return false;
+    if (msg_ptr->point_step == 0 || msg_ptr->width == 0) return false;
+    if (msg_ptr->row_step < static_cast<uint64_t>(msg_ptr->width) * msg_ptr->point_step ||
+        msg_ptr->data.size() < static_cast<uint64_t>(msg_ptr->row_step) * msg_ptr->height ||
+        (down_sample && (!std::isfinite(voxel_size) || voxel_size <= 0))) return false;
 
     const auto fmap = buildFieldMap(msg_ptr);
     auto itx = fmap.find("x");
@@ -345,6 +348,37 @@ inline bool pc2ToPointCloudXYZIT(
         return false;
     }
 
+    // Validate field layouts before accessing message bytes.
+    for (const auto& name : {"x", "y", "z"}) {
+        const auto& field = fmap.at(name);
+        if (field.datatype != sensor_msgs::msg::PointField::FLOAT32 ||
+            static_cast<uint64_t>(field.offset) + sizeof(float) > msg_ptr->point_step) return false;
+    }
+    const auto intensity_field = fmap.find("intensity");
+    if (intensity_field != fmap.end()) {
+        const auto& field = intensity_field->second;
+        size_t bytes = 0;
+        switch (field.datatype) {
+            case sensor_msgs::msg::PointField::FLOAT32: bytes = 4; break;
+            case sensor_msgs::msg::PointField::FLOAT64: bytes = 8; break;
+            case sensor_msgs::msg::PointField::UINT16: bytes = 2; break;
+            case sensor_msgs::msg::PointField::UINT8: bytes = 1; break;
+            default: return false;
+        }
+        if (static_cast<uint64_t>(field.offset) + bytes > msg_ptr->point_step) return false;
+    }
+    for (const auto& name : {"t", "time"}) {
+        const auto it = fmap.find(name);
+        if (it == fmap.end()) continue;
+        const auto& field = it->second;
+        const size_t bytes = field.datatype == sensor_msgs::msg::PointField::FLOAT64 ? 8 :
+                             field.datatype == sensor_msgs::msg::PointField::FLOAT32 ? 4 : 0;
+        if (bytes && static_cast<uint64_t>(field.offset) + bytes > msg_ptr->point_step) return false;
+    }
+    // Supported sensor recordings use native little-endian fields.
+    const uint16_t endian_probe = 1;
+    const bool native_bigendian = *reinterpret_cast<const uint8_t*>(&endian_probe) == 0;
+    if (msg_ptr->is_bigendian != native_bigendian) return false;
     const bool has_intensity = (fmap.find("intensity") != fmap.end());
     const bool has_t = (fmap.find("t") != fmap.end()) || (fmap.find("time") != fmap.end());
     const auto itI = fmap.find("intensity");
@@ -360,7 +394,7 @@ inline bool pc2ToPointCloudXYZIT(
     if (!down_sample) {
         out.reserve(N);
         for (std::size_t i = 0; i < N; ++i) {
-            const std::uint8_t* p = base + i * msg_ptr->point_step;
+            const std::uint8_t* p = base + (i / msg_ptr->width) * msg_ptr->row_step + (i % msg_ptr->width) * msg_ptr->point_step;
 
             float x = readScalar<float>(p, itx->second.offset);
             float y = readScalar<float>(p, ity->second.offset);
@@ -380,6 +414,9 @@ inline bool pc2ToPointCloudXYZIT(
                 switch (fi.datatype) {
                     case sensor_msgs::msg::PointField::FLOAT32:
                         intensity = readScalar<float>(p, fi.offset);
+                        break;
+                    case sensor_msgs::msg::PointField::FLOAT64:
+                        intensity = static_cast<float>(readScalar<double>(p, fi.offset));
                         break;
                     case sensor_msgs::msg::PointField::UINT16:
                         intensity = static_cast<float>(readScalar<std::uint16_t>(p, fi.offset));
@@ -407,7 +444,7 @@ inline bool pc2ToPointCloudXYZIT(
                 }
             }
 
-            out.emplace_back(x, y, z, intensity, t);
+            out.emplace_back(x, y, z, std::isfinite(intensity) ? intensity : 0.0f, t);
         }
         return true;
     }
@@ -417,7 +454,7 @@ inline bool pc2ToPointCloudXYZIT(
     voxels.reserve(N / 4 + 1);
 
     for (std::size_t i = 0; i < N; ++i) {
-        const std::uint8_t* p = base + i * msg_ptr->point_step;
+        const std::uint8_t* p = base + (i / msg_ptr->width) * msg_ptr->row_step + (i % msg_ptr->width) * msg_ptr->point_step;
 
         float x = readScalar<float>(p, itx->second.offset);
         float y = readScalar<float>(p, ity->second.offset);
@@ -437,6 +474,9 @@ inline bool pc2ToPointCloudXYZIT(
             switch (fi.datatype) {
                 case sensor_msgs::msg::PointField::FLOAT32:
                     intensity = readScalar<float>(p, fi.offset);
+                    break;
+                case sensor_msgs::msg::PointField::FLOAT64:
+                    intensity = static_cast<float>(readScalar<double>(p, fi.offset));
                     break;
                 case sensor_msgs::msg::PointField::UINT16:
                     intensity = static_cast<float>(readScalar<std::uint16_t>(p, fi.offset));
@@ -474,7 +514,7 @@ inline bool pc2ToPointCloudXYZIT(
         a.sx += x;
         a.sy += y;
         a.sz += z;
-        a.si += intensity;
+        a.si += std::isfinite(intensity) ? intensity : 0.0f;
         a.st += t;
         a.count += 1;
     }
@@ -496,69 +536,51 @@ inline bool pc2ToPointCloudXYZIT(
 
     return true;
 }
-inline bool loadPointCloudFromFile(std::string filename, std::shared_ptr<PointCloud>pointPtr) {
-   pointPtr->clear();
-   std::fstream is(filename);
-   if(!is) {
-         std::cerr << "Failed to open file\n";
-         return false;
-   }
-   //get file size in bytes
-   is.seekg(0, std::ios::end);
-   std::streampos nbytes = is.tellg();
-   if(nbytes <=0) {
-      std::cerr << "Empty file\n";
-      return false;
-   }
-   is.seekg(0, std::ios::beg);
-   std::size_t total_bytes  = static_cast<std::size_t>(nbytes);
-   std::size_t num_floats   = total_bytes / sizeof(float);
-   std::size_t fields_per_point = 3;
-   // if (num_floats % 5 == 0) {
-   //    fields_per_point = 5;
-   // } else if (num_floats % 4 == 0) {
-   //    fields_per_point = 4;
-   // }
-
-   //std::cout<<fields_per_point<<std::endl;
-   std::size_t num_points = num_floats / fields_per_point;
-   std::vector<float> buffer(num_floats);
-   is.read(reinterpret_cast<char*>(buffer.data()), total_bytes);
-
-   if (!is.good()) {
-      std::cout <<  "Failed to read binary data" << std::endl;
-      return false;
-   }
-   for (std::size_t i = 0; i < num_points; ++i) {
-      const float x = buffer[i * fields_per_point + 0];
-      const float y = buffer[i * fields_per_point + 1];
-      const float z = buffer[i * fields_per_point + 2];
-      pointPtr->emplace_back(x,y,z);
-   }
-   return true;
+// Keep XYZ files compatible with existing backend/evaluation tools. Intensity
+// is stored as one float32 per point in a matching .intensity companion file.
+inline bool loadPointCloudFromFile(std::string filename, std::shared_ptr<PointCloud> points,
+                                   bool* has_intensity = nullptr) {
+    points->clear();
+    if (has_intensity) *has_intensity = false;
+    std::ifstream xyz(filename, std::ios::binary | std::ios::ate);
+    if (!xyz) return false;
+    const auto bytes = xyz.tellg();
+    if (bytes <= 0 || static_cast<size_t>(bytes) % (3 * sizeof(float))) return false;
+    const size_t count = static_cast<size_t>(bytes) / (3 * sizeof(float));
+    xyz.seekg(0);
+    std::vector<float> intensities(count, 0.0f);
+    std::ifstream intensity(filename + ".intensity", std::ios::binary | std::ios::ate);
+    if (intensity) {
+        if (intensity.tellg() != static_cast<std::streamoff>(count * sizeof(float))) {
+            std::cerr << "Intensity count does not match cloud: " << filename << "\n";
+            return false;
+        }
+        intensity.seekg(0);
+        if (!intensity.read(reinterpret_cast<char*>(intensities.data()), count * sizeof(float))) return false;
+        if (has_intensity) *has_intensity = true;
+    }
+    for (size_t i = 0; i < count; ++i) {
+        float p[3];
+        if (!xyz.read(reinterpret_cast<char*>(p), sizeof(p))) return false;
+        if (!std::isfinite(p[0]) || !std::isfinite(p[1]) || !std::isfinite(p[2])) return false;
+        points->emplace_back(p[0], p[1], p[2],
+                            std::isfinite(intensities[i]) ? intensities[i] : 0.0f, 0.0f);
+    }
+    return true;
 }
 
-inline bool writePointCloudToFile(const std::string& out_path, std::shared_ptr<PointCloud>cloud_ptr) {
-   //TODO: implement later
-   //std::cout<<"SaveSubMap"<<std::endl;
-   std::ofstream ofs(out_path.c_str(), std::ios::binary|std::ios::app);
-   if(!ofs) {
-      std::cerr<< "Can't open cloud file" << std::endl;
-      return false;
-   }
-   //write in only one cloud file
-   uint64_t n = cloud_ptr->size();
-   for(int i=0; i< n; i++) {
-      const auto& p = (*cloud_ptr)[i];
-      ofs.write(reinterpret_cast<const char*>(&p.x), sizeof(float));
-      ofs.write(reinterpret_cast<const char*>(&p.y), sizeof(float));
-      ofs.write(reinterpret_cast<const char*>(&p.z), sizeof(float));
-      //ofs.write(reinterpret_cast<const char*>(&p.intensity), sizeof(float));
-   }
-   uint64_t total_size = n*sizeof(float)*3;
-   //std::cout<< "Written "<< total_size<< " of " <<n<<"points"<<std::endl;
-   //open the file handler
-   //write binary to the file
-   return true;
+inline bool writePointCloudToFile(const std::string& path, std::shared_ptr<PointCloud> points) {
+    std::ofstream xyz(path, std::ios::binary | std::ios::trunc);
+    std::ofstream intensity(path + ".intensity", std::ios::binary | std::ios::trunc);
+    if (!xyz || !intensity) return false;
+    for (const auto& p : *points) {
+        const float coords[3] = {p.x, p.y, p.z};
+        const float value = std::isfinite(p.intensity) ? p.intensity : 0.0f;
+        xyz.write(reinterpret_cast<const char*>(coords), sizeof(coords));
+        intensity.write(reinterpret_cast<const char*>(&value), sizeof(value));
+    }
+    xyz.close();
+    intensity.close();
+    return bool(xyz) && bool(intensity);
 }
 #endif //POINTCLOUDUTILS_H
