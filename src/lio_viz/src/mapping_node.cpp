@@ -118,7 +118,7 @@ if (mode_ == "roptimization") {
   writeVisualizationConfig(init_path, MapMode::replay_optimization);
 }
   std::map<size_t, std::shared_ptr<KeyFrame>>kf_map;
-  loadKeyFrames("/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/output_temp/kf_output.txt", kf_map);
+  loadKeyFrames("/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/garden_output/kf_output.txt", kf_map);
   for(auto it : kf_map) {
     replay_kf_q_.push(it.second);
   }
@@ -143,7 +143,7 @@ else if (mode_ == "optimization") {
  // //update kf loop_opti_pose_, sm T_w_s_opti_
  // backend.runLoopClosure();
  // //test loop closure
- // const std::string kf_path = "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/output_temp/kf_output.txt";
+ // const std::string kf_path = "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/garden_output/kf_output.txt";
  // writeKeyFramesToFile(kf_path, backend.getKeyFrames());
  // std::cout<<"finish here"<<std::endl;
  //load key frames

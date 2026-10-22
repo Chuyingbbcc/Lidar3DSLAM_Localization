@@ -42,7 +42,7 @@ struct ESKFOptions {
   double pos_noise_ = 0.1;
   double height_noise_ = 0.1;
   double ang_noise_ = 1.0* (M_PI/180.0);
-  std::string out_pos_path_ = "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/output_temp/route.txt";
+  std::string out_pos_path_ = "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/garden_output/route.txt";
 };
 
 ESKF(const ESKFOptions& opt);

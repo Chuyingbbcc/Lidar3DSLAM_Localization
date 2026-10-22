@@ -15,6 +15,8 @@
 #include  <rclcpp/rclcpp.hpp>
 
 #include <iostream>
+#include <cmath>
+#include <stdexcept>
 #include <mutex>
 #include <yaml-cpp/yaml.h>
 
@@ -44,7 +46,9 @@ bool Frontend::Run() {
     try {
         lio_pipe_ptr_-> onPreprocess(
           [](std::shared_ptr<sensor_msgs::msg::PointCloud2>msg_ptr, PointCloud& pc, const LioOptions& options) {
-          pc2ToPointCloudXYZIT(msg_ptr, pc, options.down_sample_ratio_, options.down_sample_);
+          if (!pc2ToPointCloudXYZIT(msg_ptr, pc, options.down_sample_ratio_, options.down_sample_)) {
+              throw std::runtime_error("Invalid point cloud layout or point timestamps");
+          }
         }
        );
 
@@ -69,7 +73,7 @@ bool Frontend::Run() {
         //
         io_ptr_->onImu([&](const sensor_msgs::msg::Imu& imu_msg, double t_ns) {
            ImuData imu_data;
-           toImuData(imu_data, imu_msg, t_ns);
+           toImuData(imu_data, imu_msg, t_ns, fe_options_.lio_options_.imu_acc_scale_);
            lio_pipe_ptr_->pushImu(imu_data);
         });
         io_ptr_->onLidar([&](const sensor_msgs::msg::PointCloud2& cloud_msg, double t_ns) {
@@ -78,17 +82,6 @@ bool Frontend::Run() {
            if (stop_requested_.load()) {
              return;
           }
-
-           lidar_count_++;
-
-
-      if (lidar_count_ >= max_lidar_count_) {
-          std::cout << "[Frontend] Early stop requested at lidar "
-                    << lidar_count_ << std::endl;
-
-          stop_requested_.store(true);
-          return;
-      }
 
            lio_pipe_ptr_->onLidarMsg(cloud_msg, t_ns);
         });
@@ -182,6 +175,15 @@ bool Frontend::loadFrontendConfig() {
 
         // lio_options
         LioOptions lio_options;
+        if (cfg["use_imu"]) {
+            lio_options.use_imu_ = cfg["use_imu"].as<bool>();
+        }
+        if (cfg["imu_acc_scale"]) {
+            lio_options.imu_acc_scale_ = cfg["imu_acc_scale"].as<double>();
+            if (!std::isfinite(lio_options.imu_acc_scale_) || lio_options.imu_acc_scale_ <= 0) {
+                throw std::invalid_argument("imu_acc_scale must be finite and positive");
+            }
+        }
         if (cfg["num_threads"]) {
             lio_options.num_threads_ = cfg["num_threads"].as<int>();
         }
@@ -203,8 +205,13 @@ bool Frontend::loadFrontendConfig() {
 
         // io_options
         RosIoOffline::IoOptions io_options;
+        io_options.finish_imu_scan_ = lio_options.use_imu_;
         if (cfg["print_topics"]) {
             io_options.print_topics_ = cfg["print_topics"].as<bool>();
+        }
+
+        if (cfg["max_lidar_frames"]) {
+            io_options.max_lidar_frames_ = cfg["max_lidar_frames"].as<size_t>();
         }
 
         // lo_options

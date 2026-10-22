@@ -4,6 +4,7 @@
 
 #include "io/ros_io_offline.h"
 #include "iostream"
+#include "point_cloud_utils.h"
 #include <iomanip>
 
 #include <unordered_set>
@@ -109,7 +110,14 @@ bool RosIoOffline::go() {
 
   size_t total = 0, pc2_n = 0, imu_n = 0, odom_n = 0, tf_n = 0, gps_n =0;
 
+  double final_scan_end = 0;
   while (reader.has_next()) {
+    if (io_options_.max_lidar_frames_ > 0 && pc2_n >= io_options_.max_lidar_frames_) {
+      if (!io_options_.finish_imu_scan_ || !imu_cb_ || last_imu_time_ >= final_scan_end) {
+        std::cout << "[RosbagOfflineReader] Frame limit reached: " << pc2_n << "\n";
+        break;
+      }
+    }
     if (wait_cb_) {
       wait_cb_();
     }
@@ -126,18 +134,27 @@ bool RosIoOffline::go() {
       continue;
     }
 
-    if (pc2_cb_ && (topic_name == "/kitti/velodyne_points" )) {
+    if (pc2_cb_ && topic_name == "/livox/lidar") {
+      // Read-ahead may accept IMU after the cap, but never another LiDAR frame.
+      if (io_options_.max_lidar_frames_ > 0 && pc2_n >= io_options_.max_lidar_frames_) continue;
       sensor_msgs::msg::PointCloud2 msg;
       rclcpp::SerializedMessage serialized(*bag_msg->serialized_data);
       pc2_ser.deserialize_message(&serialized, &msg);
       double lidar_msg_t = extractTime(msg.header, bag_msg->time_stamp, last_lidar_time_);
       ++pc2_n;
+      if (io_options_.finish_imu_scan_ && io_options_.max_lidar_frames_ > 0 && pc2_n == io_options_.max_lidar_frames_) {
+        PointCloud scan;
+        if (!pc2ToPointCloudXYZIT(std::make_shared<sensor_msgs::msg::PointCloud2>(msg), scan, 1.f, false) || !scan.hasPointTiming()) {
+          throw std::runtime_error("Cannot establish final scan end for IMU read-ahead");
+        }
+        final_scan_end = scan.get_time();
+      }
       pc2_cb_(msg, lidar_msg_t);
       last_lidar_time_ = lidar_msg_t;
       continue;
     }
 
-    if (imu_cb_ && (topic_name == "/kitti/imu" )) {
+    if (imu_cb_ && topic_name == "/livox/imu") {
       sensor_msgs::msg::Imu msg;
       rclcpp::SerializedMessage serialized(*bag_msg->serialized_data);
       imu_ser.deserialize_message(&serialized, &msg);
@@ -148,7 +165,7 @@ bool RosIoOffline::go() {
       continue;
     }
 
-    if(gps_cb_ && (topic_name == "/kitti/gps/fix")) {
+    if(gps_cb_ && topic_name == "/gps/fix") {
       sensor_msgs::msg::NavSatFix msg;
       rclcpp::SerializedMessage serialized(*bag_msg->serialized_data);
       gps_ser.deserialize_message(&serialized, &msg);

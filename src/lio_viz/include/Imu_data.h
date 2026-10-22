@@ -20,16 +20,17 @@ struct ImuData {
       Vec3d gyro = Vec3d(0.0, 0.0, 0.0);
 };
 
-inline void toImuData(ImuData& out, const sensor_msgs::msg::Imu& msg, const double t_ns) {
+inline void toImuData(ImuData& out, const sensor_msgs::msg::Imu& msg, const double t_ns,
+                      const double acc_scale = 1.0) {
     // time
     out.t = t_ns;
 
     //std::cout<< "imu data t: " << t_ns << std::endl;
 
-    // accel (linear_acceleration)
-    out.acc(0) = msg.linear_acceleration.x;
-    out.acc(1) = msg.linear_acceleration.y;
-    out.acc(2) = msg.linear_acceleration.z;
+    // Convert input acceleration to m/s^2; SI input uses a scale of 1.0.
+    out.acc(0) = msg.linear_acceleration.x * acc_scale;
+    out.acc(1) = msg.linear_acceleration.y * acc_scale;
+    out.acc(2) = msg.linear_acceleration.z * acc_scale;
 
     // gyro (angular_velocity)
     out.gyro(0) = msg.angular_velocity.x;

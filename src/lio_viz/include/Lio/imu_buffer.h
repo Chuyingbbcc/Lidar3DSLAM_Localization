@@ -22,6 +22,8 @@ class ImuBuffer {
     void extract(std::vector<ImuData>& out, const double t0, const double t1 );
     void pop_segment(std::vector<ImuData>& out, double t0, double t1, double keep_prev = 0.1);
 
+    // Exact endpoint interpolation, with complete bracketing and bounded gaps.
+    bool extractCovered(std::vector<ImuData>& out, double t0, double t1, double max_gap) const;
     void dropOlderThan(double t);
 
     bool empty() const;

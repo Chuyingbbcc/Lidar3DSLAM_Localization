@@ -29,7 +29,7 @@ protected:
   int cnt_frame_ =0;
   size_t key_frame_idx_ = -1;
   LoOption opt_;
-  std::string out_dir_ = "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/output_temp";
+  std::string out_dir_ = "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/garden_output";
 };
 
 class IncNDTOdometry : public LidarOdometry {

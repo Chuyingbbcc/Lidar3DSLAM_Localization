@@ -30,6 +30,7 @@ LioPipe::LioPipe(std::size_t num_thread, double slack, const LioOptions& options
 }
 
 void LioPipe::start() {
+std::cout << "Odometry mode: " << (options_.use_imu_ ? "LIO (IMU enabled)" : "LO (LiDAR only)") << std::endl;
 if(running_.exchange(true))return;
 consumer_thread_= std::thread([this]{
     try { postProcess(); } catch (...) { recordWorkerFailure(); }
@@ -66,7 +67,7 @@ void LioPipe::onLidarMsg(const sensor_msgs::msg::PointCloud2& msg,double ts) {
 
 
 void LioPipe::pushImu(ImuData& data) {
-    imu_buffer_.push(data);
+    if (options_.use_imu_) imu_buffer_.push(data);
 }
 
 
@@ -82,35 +83,36 @@ void LioPipe::postProcess() {
            std::cout<< "lidar order messed!" <<std::endl;
            continue;
         }
-        if (!imu_buffer_.wait_until(t1, 0.5)) {
-            std::cerr << "IMU not ready for t1=" << t1
-              << " newest=" << imu_buffer_.latest_time() << "\n";
-            continue;
+        SE3d cur_pose;
+        bool enough_prediction = false;
+        if (options_.use_imu_) {
+            if (!scan->hasPointTiming()) {
+                throw std::runtime_error("IMU processing requires explicit per-point scan timing");
+            }
+            if (!imu_buffer_.wait_until(t1, 0.5)) {
+                throw std::runtime_error("IMU coverage does not reach scan end; stopping LIO");
+            }
+            const double state_time = eskf_.GetNorminalState().t_;
+            const double scan_start = static_cast<double>(scan->scanStartNs()) * 1e-9;
+            const double integrate_from = state_time > 0 ? state_time : scan_start;
+            // Validate the whole acquisition interval as well as the state propagation interval.
+            std::vector<ImuData> imu_vec;
+            if (!imu_buffer_.extractCovered(imu_vec, std::min(scan_start, integrate_from), t1,
+                                            5 * options_.eskf_options_.imu_dt_)) {
+                throw std::runtime_error("Missing IMU coverage or excessive gap across scan interval; stopping LIO");
+            }
+            if (state_time <= 0) {
+                // Seed only the clock; gravity/bias initialization is a separate step.
+                eskf_.Predict(imu_vec.front());
+            }
+            Predict(imu_vec);
+            enough_prediction = true;
+            cur_pose = eskf_.GetCurrentPose();
+            imu_buffer_.dropOlderThan(scan_start - 0.1);
         }
-        std::vector<ImuData> imu_vec ={};
-        imu_buffer_.extract(imu_vec, t1- 0.1, t1);
-        bool enough_prediction = true;
-        if (imu_vec.size() <5 ) {
-            enough_prediction =false;
-           std::cerr << "imu not enough!!" << std::endl;
-        }
-        // for(auto& imu : imu_vec) {
-        //     if(imu.t <t1-0.1 || imu.t>t1){
-        //         std::cerr<< "Imu time invalid! " <<imu.t << "\n";
-        //     }
-        // }
-        //std::cout<<"find " << imu_vec.size() << " imu for lidar "<< t1<< "\n";
-        Predict(imu_vec);
-        SE3d cur_pose = eskf_.GetCurrentPose();
-        //SE3d cur_pose = SE3d();
-        size_t kf_idx = -1;
-        if(num_frames_ <= 20) {
-            kf_idx = lo_.AddCloud(scan,cur_pose, true);
-        }
-        else {
-           bool use_guess = !enough_prediction;
-           kf_idx = lo_.AddCloud(scan, cur_pose, false);
-        }
+        // LO uses the odometry motion guess without waiting for IMU data.
+        const bool use_guess = !options_.use_imu_ || num_frames_ <= 20 || !enough_prediction;
+        size_t kf_idx = lo_.AddCloud(scan, cur_pose, use_guess);
         if(kf_idx == -1 ){
            std::cerr << "Registration failed"<<std::endl;
         }
@@ -132,7 +134,7 @@ void LioPipe::postProcess() {
         }
         scan->clear();
         num_frames_++;
-        eskf_.ObserveSE3(cur_pose);
+        if (options_.use_imu_) eskf_.ObserveSE3(cur_pose);
         last_t1 = t1;
 
 #ifdef DEBUG_LIO
@@ -230,7 +232,8 @@ void LioPipe::Predict(std::vector<ImuData>& imu_vect) {
   eskf_states_.clear();
   eskf_states_.emplace_back(eskf_.GetNorminalState());
   for (auto& imu : imu_vect) {
-     eskf_.Predict(imu);
+     if (imu.t <= eskf_.GetNorminalState().t_) continue;
+     if (!eskf_.Predict(imu)) throw std::runtime_error("IMU prediction rejected a covered interval");
      eskf_states_.emplace_back(eskf_.GetNorminalState());
   }
 }

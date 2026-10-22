@@ -13,6 +13,8 @@
 #include <unordered_set>
 
 #include <cstdint>
+#include <limits>
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <unordered_map>
@@ -28,7 +30,8 @@
 struct PointXYZIT {
     float x,y,z;
     float intensity;
-    float t;
+    float t;  // Relative seconds from scan start when per-point timing is available.
+    int64_t offset_ns = 0;  // Authoritative point acquisition offset.
 };
 
 class PointCloud {
@@ -62,6 +65,9 @@ class PointCloud {
     //modifiers
     void clear() {
         pts_.clear();
+        has_point_timing_ = false;
+        scan_start_ns_ = scan_end_ns_ = pose_time_ns_ = 0;
+        time_ = 0;
         has_bbox_ = false;
         min_x_ = min_y_ = min_z_ =  1e30;
         max_x_ = max_y_ = max_z_ = -1e30;
@@ -72,6 +78,17 @@ class PointCloud {
         rebuildBBox();
     }
     void setTime(const double t) {time_ = t;}
+    bool hasPointTiming() const { return has_point_timing_; }
+    int64_t scanStartNs() const { return scan_start_ns_; }
+    int64_t scanEndNs() const { return scan_end_ns_; }
+    int64_t poseTimeNs() const { return pose_time_ns_; }
+    void setScanTiming(int64_t start_ns, int64_t end_ns) {
+        if (start_ns < 0 || end_ns < start_ns) throw std::invalid_argument("Invalid scan interval");
+        scan_start_ns_ = start_ns;
+        scan_end_ns_ = pose_time_ns_ = end_ns;
+        has_point_timing_ = true;
+        time_ = static_cast<double>(pose_time_ns_) * 1e-9;
+    }
 
     void push_back(const Point& pt) {
         pts_.push_back(pt);
@@ -123,7 +140,9 @@ class PointCloud {
     double maxZ() const { return max_z_; }
     private:
     std::vector<Point> pts_;
-    double time_;
+    double time_ = 0;
+    bool has_point_timing_ = false;
+    int64_t scan_start_ns_ = 0, scan_end_ns_ = 0, pose_time_ns_ = 0;
 
     bool has_bbox_ = false;
     double min_x_ =  1e30;
@@ -238,95 +257,12 @@ struct PtrVoxelHash {
 struct VoxelAccum {
    double sx = 0.0, sy = 0.0, sz = 0.0;
    double si = 0.0, st = 0.0;
+   PointXYZIT timed_point{};
    int count = 0;
    int render_idx_ = -1;
 
 };
-// inline bool pc2ToPointCloudXYZIT( const std::shared_ptr<sensor_msgs::msg::PointCloud2> msg_ptr,
-//     PointCloud& out,
-//     float voxel_size,
-//     bool down_sample,
-//     bool skip_nan = true){
-//     out.clear();
-//     if(msg_ptr->point_step ==0) return false;
-//
-//     const auto fmap =buildFieldMap(msg_ptr);
-//     auto itx = fmap.find("x");
-//     auto ity = fmap.find("y");
-//     auto itz = fmap.find("z");
-//     if (itx == fmap.end() || ity == fmap.end() || itz == fmap.end()) {
-//         return false;
-//     }
-//     const bool has_intensity = (fmap.find("intensity") != fmap.end());
-//     const bool has_t = (fmap.find("t") != fmap.end()) || (fmap.find("time") != fmap.end());
-//     const auto itI = fmap.find("intensity");
-//     const auto itT = fmap.find("t");
-//     const auto itTime = fmap.find("time");
-//
-//     const std::size_t N = static_cast<std::size_t>(msg_ptr->width) * static_cast<std::size_t>(msg_ptr->height);
-//     out.reserve(N);
-//
-//     const float inv = 1.0f / voxel_size;
-//     std::unordered_set<PtrVoxelKey, PtrVoxelHash>seen;
-//
-//     const std::uint8_t* base = msg_ptr->data.data();
-//     for (std::size_t i = 0; i < N; ++i) {
-//        const std::uint8_t* p = base + i*msg_ptr->point_step;
-//
-//        float x = readScalar<float>(p, itx->second.offset);
-//        float y = readScalar<float>(p, ity->second.offset);
-//        float z = readScalar<float>(p, itz->second.offset);
-//        if (skip_nan) {
-//           if (!(std::isfinite(x) && std::isfinite(y) && std::isfinite(z)))continue;
-//        }
-//
-//        PtrVoxelKey key{
-//         (int32_t)std::floor(x *inv),
-//            (int32_t)std::floor(y *inv),
-//            (int32_t)std::floor(z *inv),
-//        };
-//
-//        if(down_sample && !seen.insert(key).second)continue;
-//        if(z<-1 || x< -40 || x> 40 || y< -40 || y>40) {
-//          continue;
-//        }
-//
-//        float intensity = 0.f;
-//        if (has_intensity) {
-//          const auto& fi  = itI->second;
-//          switch (fi.datatype) {
-//             case sensor_msgs::msg::PointField::FLOAT32:
-//                intensity = readScalar<float>(p, fi.offset);
-//                break;
-//             case sensor_msgs::msg::PointField::UINT16:
-//                intensity = static_cast<float>(readScalar<std::uint16_t>(p, fi.offset));
-//                break;
-//             case sensor_msgs::msg::PointField::UINT8:
-//                intensity = static_cast<float>(readScalar<std::uint8_t>(p, fi.offset));
-//                break;
-//             default:
-//                // unknown type -> leave 0
-//                break;
-//          }
-//        }
-//        float t = 0.f;
-//        if (has_t) {
-//           const FieldInfo* ft  = nullptr;
-//           if (itT != fmap.end()) ft= &itT->second;
-//           else if (itTime != fmap.end()) ft = &itTime->second;
-//           if (ft) {
-//              if (ft->datatype == sensor_msgs::msg::PointField::FLOAT32) {
-//                 t = readScalar<float>(p, ft->offset);
-//              } else if (ft->datatype == sensor_msgs::msg::PointField::FLOAT64) {
-//                 t = static_cast<float>(readScalar<double>(p, ft->offset));
-//              }
-//           }
-//        }
-//        out.emplace_back(x,y,z,intensity,t);
-//     }
-//    //std::cout<<N<< " points read from msg. "<< out.size()<< " stored"<<std::endl;
-//    return true;
-// }
+
 inline bool pc2ToPointCloudXYZIT(
     const std::shared_ptr<sensor_msgs::msg::PointCloud2> msg_ptr,
     PointCloud& out,
@@ -334,6 +270,7 @@ inline bool pc2ToPointCloudXYZIT(
     bool down_sample,
     bool skip_nan = true)
 {
+    const double fallback_time = out.get_time();
     out.clear();
     if (msg_ptr->point_step == 0 || msg_ptr->width == 0) return false;
     if (msg_ptr->row_step < static_cast<uint64_t>(msg_ptr->width) * msg_ptr->point_step ||
@@ -367,13 +304,14 @@ inline bool pc2ToPointCloudXYZIT(
         }
         if (static_cast<uint64_t>(field.offset) + bytes > msg_ptr->point_step) return false;
     }
-    for (const auto& name : {"t", "time"}) {
+    for (const auto& name : {"t", "time", "timestamp"}) {
         const auto it = fmap.find(name);
         if (it == fmap.end()) continue;
         const auto& field = it->second;
         const size_t bytes = field.datatype == sensor_msgs::msg::PointField::FLOAT64 ? 8 :
                              field.datatype == sensor_msgs::msg::PointField::FLOAT32 ? 4 : 0;
-        if (bytes && static_cast<uint64_t>(field.offset) + bytes > msg_ptr->point_step) return false;
+        if (!bytes || static_cast<uint64_t>(field.offset) + bytes > msg_ptr->point_step) return false;
+        if (std::string(name) == "timestamp" && field.datatype != sensor_msgs::msg::PointField::FLOAT64) return false;
     }
     // Supported sensor recordings use native little-endian fields.
     const uint16_t endian_probe = 1;
@@ -390,6 +328,30 @@ inline bool pc2ToPointCloudXYZIT(
         static_cast<std::size_t>(msg_ptr->height);
 
     const std::uint8_t* base = msg_ptr->data.data();
+    const int64_t header_ns = static_cast<int64_t>(msg_ptr->header.stamp.sec) * 1000000000LL +
+                              msg_ptr->header.stamp.nanosec;
+    out.setTime(header_ns != 0 ? static_cast<double>(header_ns) * 1e-9 : fallback_time);
+    const auto timestamp = fmap.find("timestamp");
+    const bool timed = timestamp != fmap.end();
+    // This recording's timestamp field is absolute nanoseconds, not seconds.
+    // Inspect every raw point before crop/voxel filtering; storage order may differ from time order.
+    if (timed) {
+        if (N == 0) return false;
+        int64_t start_ns = std::numeric_limits<int64_t>::max(), end_ns = 0;
+        for (size_t i = 0; i < N; ++i) {
+            const auto* p = base + (i / msg_ptr->width) * msg_ptr->row_step + (i % msg_ptr->width) * msg_ptr->point_step;
+            const double raw = readScalar<double>(p, timestamp->second.offset);
+            if (!std::isfinite(raw) || raw < 0 || raw >= static_cast<double>(std::numeric_limits<int64_t>::max())) return false;
+            const int64_t ns = static_cast<int64_t>(std::llround(raw));
+            start_ns = std::min(start_ns, ns);
+            end_ns = std::max(end_ns, ns);
+        }
+        out.setScanTiming(start_ns, end_ns);
+    }
+    auto point_offset = [&](const uint8_t* p) -> int64_t {
+        return timed ? static_cast<int64_t>(std::llround(readScalar<double>(p, timestamp->second.offset))) - out.scanStartNs() : 0;
+    };
+
 
     if (!down_sample) {
         out.reserve(N);
@@ -430,7 +392,9 @@ inline bool pc2ToPointCloudXYZIT(
             }
 
             float t = 0.f;
-            if (has_t) {
+            if (timed) {
+                t = static_cast<float>(point_offset(p) * 1e-9);
+            } else if (has_t) {
                 const FieldInfo* ft = nullptr;
                 if (itT != fmap.end()) ft = &itT->second;
                 else if (itTime != fmap.end()) ft = &itTime->second;
@@ -444,7 +408,7 @@ inline bool pc2ToPointCloudXYZIT(
                 }
             }
 
-            out.emplace_back(x, y, z, std::isfinite(intensity) ? intensity : 0.0f, t);
+            out.emplace_back(x, y, z, std::isfinite(intensity) ? intensity : 0.0f, t).offset_ns = point_offset(p);
         }
         return true;
     }
@@ -490,7 +454,9 @@ inline bool pc2ToPointCloudXYZIT(
         }
 
         float t = 0.f;
-        if (has_t) {
+        if (timed) {
+            t = static_cast<float>(point_offset(p) * 1e-9);
+        } else if (has_t) {
             const FieldInfo* ft = nullptr;
             if (itT != fmap.end()) ft = &itT->second;
             else if (itTime != fmap.end()) ft = &itTime->second;
@@ -511,6 +477,9 @@ inline bool pc2ToPointCloudXYZIT(
         };
 
         VoxelAccum& a = voxels[key];
+        if (timed && a.count == 0) {
+            a.timed_point = PointXYZIT{x, y, z, std::isfinite(intensity) ? intensity : 0.0f, t, point_offset(p)};
+        }
         a.sx += x;
         a.sy += y;
         a.sz += z;
@@ -524,6 +493,9 @@ inline bool pc2ToPointCloudXYZIT(
         const VoxelAccum& a = kv.second;
         if (a.count <= 0) continue;
 
+        // Keep an actual measurement and its acquisition time together.
+        // Centroids mix acquisition poses; timed scans use the first point in each voxel.
+        if (timed) { out.push_back(a.timed_point); continue; }
         const float inv_count = 1.0f / static_cast<float>(a.count);
         out.emplace_back(
             static_cast<float>(a.sx * inv_count),
@@ -536,6 +508,51 @@ inline bool pc2ToPointCloudXYZIT(
 
     return true;
 }
+// Optional .timing companion: LIOTIME1, int64 start/end/reference nanoseconds,
+// uint64 point count, then int64 acquisition offsets, in native little-endian order.
+inline bool writePointTiming(const std::string& path, const PointCloud& points) {
+    if (!points.hasPointTiming()) {
+        // A legacy rewrite must not leave a stale timing companion behind.
+        std::ifstream stale(path + ".timing");
+        if (!stale) return true;
+        stale.close();
+        return std::remove((path + ".timing").c_str()) == 0;
+    }
+    std::ofstream file(path + ".timing", std::ios::binary | std::ios::trunc);
+    const int64_t times[] = {points.scanStartNs(), points.scanEndNs(), points.poseTimeNs()};
+    const uint64_t count = points.size();
+    file.write("LIOTIME1", 8);
+    file.write(reinterpret_cast<const char*>(times), sizeof(times));
+    file.write(reinterpret_cast<const char*>(&count), sizeof(count));
+    for (const auto& p : points) file.write(reinterpret_cast<const char*>(&p.offset_ns), sizeof(p.offset_ns));
+    file.close();
+    return bool(file);
+}
+
+inline bool loadPointTiming(const std::string& path, PointCloud& points) {
+    std::ifstream file(path + ".timing", std::ios::binary | std::ios::ate);
+    if (!file) return true;  // Legacy XYZ files have no acquisition timing.
+    const auto bytes = file.tellg();
+    file.seekg(0);
+    char magic[8];
+    int64_t times[3];
+    uint64_t count;
+    if (!file.read(magic, 8) || std::memcmp(magic, "LIOTIME1", 8) ||
+        !file.read(reinterpret_cast<char*>(times), sizeof(times)) ||
+        !file.read(reinterpret_cast<char*>(&count), sizeof(count))) return false;
+    if (count != points.size() || bytes != static_cast<std::streamoff>(40 + points.size() * sizeof(int64_t)) ||
+        times[0] < 0 || times[1] < times[0] || times[2] != times[1]) return false;
+    std::vector<int64_t> offsets(count);
+    if (!file.read(reinterpret_cast<char*>(offsets.data()), count * sizeof(int64_t))) return false;
+    for (auto offset : offsets) if (offset < 0 || offset > times[1] - times[0]) return false;
+    points.setScanTiming(times[0], times[1]);
+    for (size_t i = 0; i < count; ++i) {
+        points[i].offset_ns = offsets[i];
+        points[i].t = static_cast<float>(offsets[i] * 1e-9);
+    }
+    return true;
+}
+
 // Keep XYZ files compatible with existing backend/evaluation tools. Intensity
 // is stored as one float32 per point in a matching .intensity companion file.
 inline bool loadPointCloudFromFile(std::string filename, std::shared_ptr<PointCloud> points,
@@ -566,7 +583,7 @@ inline bool loadPointCloudFromFile(std::string filename, std::shared_ptr<PointCl
         points->emplace_back(p[0], p[1], p[2],
                             std::isfinite(intensities[i]) ? intensities[i] : 0.0f, 0.0f);
     }
-    return true;
+    return loadPointTiming(filename, *points);
 }
 
 inline bool writePointCloudToFile(const std::string& path, std::shared_ptr<PointCloud> points) {
@@ -581,6 +598,6 @@ inline bool writePointCloudToFile(const std::string& path, std::shared_ptr<Point
     }
     xyz.close();
     intensity.close();
-    return bool(xyz) && bool(intensity);
+    return bool(xyz) && bool(intensity) && writePointTiming(path, *points);
 }
 #endif //POINTCLOUDUTILS_H

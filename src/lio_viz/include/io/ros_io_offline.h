@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -20,6 +21,8 @@ public:
         std::vector<std::string> topics;
         bool print_topics_ =true;
         bool down_sample_  = true;
+        bool finish_imu_scan_ = false;  // At frame limit, read IMU through final scan end.
+        size_t max_lidar_frames_ = 0;  // 0 reads the entire bag.
     };
     RosIoOffline(){};
     RosIoOffline(const std::string& path ): bag_path_(path) {}

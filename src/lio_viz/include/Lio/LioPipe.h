@@ -25,6 +25,8 @@
 
 
 struct LioOptions {
+  bool use_imu_ = true;
+  double imu_acc_scale_ = 1.0;  // Input acceleration to m/s^2.
   bool down_sample_ = true;
   int num_threads_ = 3;
   double down_sample_ratio_ = 0.5;
