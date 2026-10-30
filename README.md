@@ -33,6 +33,22 @@ Orange shows the frontend route; cyan shows the optimized route. The second view
 | --- | --- |
 | <img src="output/kitti_output/route_comparison_labeled.png" alt="Frontend and optimized route overview, with orange and cyan legend" width="440"> | <img src="output/kitti_output/z_direction_route_comparison_labeled.png" alt="Side view comparing frontend and optimized route heights" width="440"> |
 
+### Garden loop-closure comparison
+
+<p align="center">
+  <img src="src/lio_viz/src/garden_output/loop_comparison.png" width="900" alt="Garden loop closure point-cloud comparison before and after optimization">
+  <br>
+  <em>Garden loop-closure regions before and after optimization. Red and green identify the paired loop observations; gray provides non-loop context.</em>
+</p>
+
+### Garden route comparison
+
+<p align="center">
+  <img src="src/lio_viz/src/garden_output/route_comparison_combined.png" width="900" alt="Garden frontend and optimized trajectory comparison in horizontal and vertical views">
+  <br>
+  <em>Garden frontend (red) and optimized (green) trajectories in horizontal and vertical views.</em>
+</p>
+
 ## System architecture
 
 ![System architecture](output/read_me_dialog/systems_diagram.png)
@@ -172,27 +188,91 @@ where $\mathcal C$ is the constraint set, $e_c$ is a constraint residual, $\Omeg
 
 ## Dataset and evaluation
 
-The completed pipeline was evaluated on the configured KITTI `2011_10_03_drive_0027` recording using saved trajectories, keyframe clouds, and accepted loop measurements.
+### Datasets
 
-| Run statistic | Value |
-| --- | ---: |
-| Keyframes / available cloud files | 2,239 / 2,239 |
-| Trajectory duration | 403.84 s |
-| Estimated horizontal distance traveled | 3,073.27 m |
-| Trajectory XY extent | 462.72 × 568.94 m |
-| Median horizontal keyframe spacing | 0.977 m |
-| Accepted loop constraints | 12 |
+The custom `garden_rewrite` recording was collected with the portable mapping
+platform shown below. The ROS 2 bag contains Livox LiDAR, IMU, and GPS streams
+over an approximately four-minute run.
 
-Evaluation focuses on **relative-pose and point-cloud consistency**, without comparing trajectory positions against GNSS.
+The KITTI comparison uses ROS 2 bag directory `data`, containing raw sequence
+`2011_10_03_drive_0027`, and its complete saved mapping output. The table
+distinguishes raw bag message counts from the keyframes used by evaluation.
 
-| Consistency metric | Frontend | Before loop optimization | After loop optimization |
-| --- | ---: | ---: | ---: |
-| Accepted-loop translation RMSE ↓ | 10.618 m | 2.355 m | 0.713 m |
-| Accepted-loop rotation RMSE ↓ | 3.457° | 2.938° | 3.080° |
-| Mean cloud matching coverage ↑ | 90.41% | 89.82% | 89.78% |
-| Cloud pairs with sufficient matches | 224 / 224 | 223 / 224 | 223 / 224 |
+<p align="center">
+  <img src="src/lio_viz/src/garden_output/map.png" width="420" alt="Portable platform used to record the garden mapping dataset">
+  <br>
+  <em>Portable mapping platform used to record the garden dataset.</em>
+</p>
 
-The run produced a complete set of saved keyframe clouds over a 3.07 km estimated route. Loop optimization reduced translation residual RMSE against 12 accepted loop measurements by **69.7%**, from 2.355 m to 0.713 m. Sampled adjacent-cloud matching retained approximately **90% coverage** after optimization. These results support operation of the mapping, saving, and loop-optimization pipeline; rotation residuals show no improvement from the loop stage. Cloud checks sample every tenth adjacent pair and use saved relative poses without rerunning registration. One optimized pair has insufficient matches. These are internal consistency checks, not independent accuracy measurements.
+| Dataset statistic | Garden | KITTI |
+| --- | ---: | ---: |
+| ROS bag directory | `garden_rewrite` | `data` |
+| Recording/sequence | Garden recording | `2011_10_03_drive_0027` |
+| ROS bag size | 1.2 GiB | 9.1 GiB |
+| Raw recording duration | 239.51 s | 471.536 s |
+| Raw LiDAR frames | 2,380 | 4,548 |
+| Raw IMU messages | 22,574 | 45,700 |
+| Raw GPS messages | 1,969 | 45,700 |
+| Saved keyframes / available clouds | 2,055 / 2,055 | 2,239 / 2,239 |
+| Evaluated trajectory duration | 232.50 s | 403.84 s |
+| Optimized trajectory travel length | 202.81 m | 3,076.73 m |
+| Accepted loop constraints | 4 | 12 |
+
+### Evaluation framework
+
+The standalone `evaluate_experiment` entry point evaluates completed mapping
+artifacts without starting `mapping_node` or changing saved poses and maps. The
+garden and KITTI experiments share the following metrics; fixed-map
+localization is currently garden-only.
+
+| Evaluation area | Metrics | Better direction | Garden | KITTI | Output |
+| --- | --- | --- | :---: | :---: | --- |
+| Trajectory geometry | Path length, endpoint displacement, horizontal endpoint displacement, and X/Y span | Descriptive | ✓ | ✓ | `trajectory_summary.csv` |
+| Vertical drift | Signed start-to-end Z drift, minimum/maximum Z, and total Z range | Smaller when elevation should be unchanged | ✓ | ✓ | `trajectory_summary.csv` |
+| Adjacent-cloud consistency | NDT score/chi-squared and valid-point coverage | Lower score and higher coverage | ✓ | ✓ | `cloud_alignment.csv`, `summary.csv` |
+| Loop-closure consistency | Translation and rotation residuals against accepted loop measurements | Lower | ✓ | ✓ | `loop_residuals.csv`, `summary.csv` |
+| Revisited-wall consistency | Central 80% wall-surface thickness across observations separated by at least 30 seconds | Lower | ✓ | ✓ where walls exist | `wall_thickness.csv`, `summary.csv` |
+| Wall-plane quality | Point-to-plane RMSE for the same revisited wall cells | Lower | ✓ | ✓ where walls exist | `wall_thickness.csv`, `summary.csv` |
+| GNSS agreement | Horizontal, absolute vertical, and 3D position errors | Lower | Optional | Optional | `gps.csv`, `summary.csv` |
+| Fixed-map localization | Registration coverage, inlier RMSE, correction distance/angle, acceptance rate, and processing time | Higher coverage/acceptance and lower error/correction | ✓ | Not currently used | `localization.csv` |
+| Route export | TUM trajectories for plotting or external tools | Descriptive | ✓ | ✓ | `frontend.tum`, `loop.tum` |
+
+### Garden and KITTI evaluation results
+
+Both datasets use the same two-stage comparison: saved frontend poses versus
+final loop-optimized poses. Garden wall statistics cover 75 symmetrically
+selected revisit cells; KITTI uses 415 cells selected in the final loop-map
+frame because its large initial drift prevents repeated surfaces from sharing
+unbiased spatial cells. Both stages within each dataset evaluate identical
+LiDAR point identities.
+
+| Metric | Garden frontend | Garden optimized | KITTI frontend | KITTI optimized |
+| --- | ---: | ---: | ---: | ---: |
+| Endpoint Z-drift magnitude | 1.868 m | 0.724 m | 0.541 m | 2.797 m |
+| Z range | 2.710 m | 2.535 m | 34.676 m | 4.322 m |
+| Accepted-loop translation RMSE ↓ | 0.912 m | 0.133 m | 10.618 m | 0.713 m |
+| Accepted-loop rotation RMSE ↓ | 2.794° | 2.369° | 3.457° | 3.080° |
+| Adjacent-cloud valid-point coverage ↑ | 79.85% | 79.83% | 90.41% | 89.78% |
+| Cloud pairs with sufficient matches | 206 / 206 | 206 / 206 | 224 / 224 | 223 / 224 |
+| Mean wall-surface thickness ↓ | 0.188 m | 0.129 m | 0.386 m | 0.171 m |
+| Median wall-surface thickness ↓ | 0.152 m | 0.118 m | 0.372 m | 0.174 m |
+| P95 wall-surface thickness ↓ | 0.475 m | 0.264 m | 0.716 m | 0.243 m |
+| Mean wall-plane RMSE ↓ | 0.087 m | 0.058 m | 0.153 m | 0.072 m |
+
+Wall-surface thickness is a map-consistency measurement of blurred or doubled
+surfaces, not the physical construction thickness of a wall. Loop residuals
+measure agreement with constraints used by optimization and are therefore not
+independent accuracy measurements. GNSS metrics are valid only when the saved
+trajectory and GNSS observations use the same coordinate frame.
+
+The KITTI run produced a complete set of saved keyframe clouds over a 3.07 km
+estimated route. Loop optimization reduced translation residual RMSE against 12
+accepted loop measurements by **93.3%**, from 10.618 m at the frontend to
+0.713 m. Sampled adjacent-cloud matching retained approximately **90% coverage**
+after optimization. Cloud checks sample every tenth adjacent pair and use saved
+relative poses without rerunning registration. One optimized pair has
+insufficient matches. These are internal consistency checks, not independent
+accuracy measurements.
 
 
 ## Main challenges
