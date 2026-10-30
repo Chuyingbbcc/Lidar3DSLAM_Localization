@@ -28,6 +28,8 @@ bool LidarOdometry::IsKeyFrame(const SE3d& cur_pose) {
 }
 
 size_t IncNDTOdometry::AddCloud(std::shared_ptr<PointCloud>& pointcloud, SE3d& pose,bool use_guess) {
+  last_used_imu_prediction_ = false;
+  last_alignment_succeeded_ = false;
   if(is_first_frame_) {
     last_pose_ = SE3d();
     inc_ndt_->AddCloud(pointcloud);
@@ -102,7 +104,7 @@ size_t IncNDTOdometry::AddCloud(std::shared_ptr<PointCloud>& pointcloud, SE3d& p
   inc_ndt_->SetSourceCloud(pointcloud);
   if (estimated_vec_.size() <2) {
     SE3d guess_before_align = guess;
-    inc_ndt_->Align(guess);
+    last_alignment_succeeded_ = inc_ndt_->Align(guess);
     //printDelta("align correction", guess_before_align, guess);
   }
   else{
@@ -117,9 +119,10 @@ size_t IncNDTOdometry::AddCloud(std::shared_ptr<PointCloud>& pointcloud, SE3d& p
       guess = init_guess;
     }else {
       guess = pose;
+      last_used_imu_prediction_ = true;
     }
     SE3d guess_before_align = guess;
-    inc_ndt_->Align(guess);
+    last_alignment_succeeded_ = inc_ndt_->Align(guess);
     std::string use_guess_str =  use_guess? "true": "false";
     std::cout<< "Use Guess: " << use_guess_str << std::endl;
     printDelta("aligned vs delta", init_guess, guess);

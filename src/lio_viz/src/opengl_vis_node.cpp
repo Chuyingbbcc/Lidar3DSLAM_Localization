@@ -1,3 +1,4 @@
+#include "Lio/GravityAlignment.h"
 // opengl_vis_node.cpp
 //
 // Created by chuchu on 12/12/25.
@@ -69,11 +70,16 @@ OpenGLPointCloudNode::OpenGLPointCloudNode()
       window_(nullptr),
       zoom_(5.0f)
 {
+    vis_config_path_ = declare_parameter<std::string>(
+        "config_path",
+        "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/Config/config.yaml");
     recording_directory_ = declare_parameter<std::string>("recording_directory", "output/recordings");
     record_on_start_ = declare_parameter<bool>("record_on_start", false);
     recording_fps_ = declare_parameter<int>("recording_fps", 30);
     if (recording_fps_ < 1 || recording_fps_ > 120)
         throw std::invalid_argument("recording_fps must be between 1 and 120");
+    gravity_aligned_override_ = get_node_parameters_interface()->get_parameter_overrides().count("gravity_aligned") != 0;
+    gravity_aligned_ = declare_parameter<bool>("gravity_aligned", false);
     camera_mode_ = declare_parameter<std::string>("camera_mode", "orbit");
     driving_distance_ = static_cast<float>(declare_parameter<double>("driving_distance", 6.0));
     driving_height_ = static_cast<float>(declare_parameter<double>("driving_height", 2.5));
@@ -83,26 +89,28 @@ OpenGLPointCloudNode::OpenGLPointCloudNode()
         !std::isfinite(driving_height_) || !std::isfinite(driving_lookahead_) || driving_lookahead_ <= 0)
         throw std::invalid_argument("Invalid driving camera configuration");
     standalone_cloud_path_ = declare_parameter<std::string>("cloud_path", "");
-    non_loop_brightness_ = static_cast<float>(declare_parameter<double>("non_loop_brightness", 0.25));
+    non_loop_brightness_ = static_cast<float>(declare_parameter<double>("non_loop_brightness", 1.0));
     if (!std::isfinite(non_loop_brightness_) || non_loop_brightness_ < 0 || non_loop_brightness_ > 1)
         throw std::invalid_argument("non_loop_brightness must be between 0 and 1");
-    color_mode_ = declare_parameter<std::string>("color_mode", "height_intensity");
+    color_mode_ = declare_parameter<std::string>("color_mode", "intensity");
     color_ground_z_ = static_cast<float>(declare_parameter<double>("color_ground_z", -1.7));
-    if ((color_mode_ != "height_intensity" && color_mode_ != "intensity") || !std::isfinite(color_ground_z_))
+    if ((color_mode_ != "height_intensity" && color_mode_ != "intensity") ||
+        !std::isfinite(color_ground_z_))
         throw std::invalid_argument("Invalid color mode or road reference height");
     intensity_min_ = static_cast<float>(declare_parameter<double>("intensity_min", 0.0));
     intensity_max_ = static_cast<float>(declare_parameter<double>("intensity_max", 1.0));
-    intensity_equalize_ = declare_parameter<bool>("intensity_equalize", true);
+    intensity_equalize_ = declare_parameter<bool>("intensity_equalize", false);
     for (size_t i = 0; i < intensity_cdf_.size(); ++i)
         intensity_cdf_[i] = static_cast<float>(i) / 255.0f;
     point_size_ = static_cast<float>(declare_parameter<double>("point_size", 1.5));
     current_frame_override_ = get_node_parameters_interface()->get_parameter_overrides().count("show_current_frame") != 0;
     show_current_frame_ = declare_parameter<bool>("show_current_frame", true);
     accumulated_map_override_ = get_node_parameters_interface()->get_parameter_overrides().count("show_accumulated_map") != 0;
-    show_accumulated_map_ = declare_parameter<bool>("show_accumulated_map", false);
+    show_accumulated_map_ = declare_parameter<bool>("show_accumulated_map", true);
     hide_ground_override_ = get_node_parameters_interface()->get_parameter_overrides().count("hide_ground") != 0;
     hide_ground_ = declare_parameter<bool>("hide_ground", standalone_cloud_path_.empty() && camera_mode_ != "driving");
     ground_z_ = static_cast<float>(declare_parameter<double>("ground_z", 0.0));
+    hide_negative_x_ = declare_parameter<bool>("hide_negative_x", false);
     if (!std::isfinite(ground_z_))
         throw std::invalid_argument("Ground height must be finite");
     display_voxel_size_ = static_cast<float>(declare_parameter<double>("display_voxel_size", camera_mode_ == "driving" ? 0.1 : 0.35));
@@ -124,6 +132,7 @@ OpenGLPointCloudNode::OpenGLPointCloudNode()
         if (intensity_equalize_) loadIntensityDistribution(standalone_cloud_path_, true);
         for (const auto& point : points) {
             if (hide_ground_ && point.p_[2] <= ground_z_) continue;
+            if (hide_negative_x_ && point.p_[0] < 0.0f) continue;
             current_frame_points_.push_back(point);
             update_scene_bounds(glm::vec3(point.p_[0], point.p_[1], point.p_[2]));
         }
@@ -270,6 +279,7 @@ bool OpenGLPointCloudNode::init_gl_resources() {
  in float v_loop_role;
  in float v_height;
  uniform bool u_height_color;
+ uniform bool u_intensity_color;
  uniform bool u_dim_non_loop;
  uniform float u_non_loop_brightness;
  uniform vec3 u_color;
@@ -280,18 +290,19 @@ bool OpenGLPointCloudNode::init_gl_resources() {
  uniform float u_cdf[256];
  out vec4 FragColor;
 
- // Sequential green palette with brighter high-intensity returns.
+ // A restrained perceptual palette: enough contrast to read reflectance without
+ // the abrupt hue changes of a full rainbow map.
  vec3 intensityColor(float t) {
-   // Current scan: orange -> amber -> cream against the green map.
+   t = 0.12 + 0.76 * smoothstep(0.0, 1.0, t);
+   // Keep the current scan warm so it remains distinct from the accumulated map.
    if (u_current_frame) {
-     if (t < 0.5) return mix(vec3(0.85, 0.18, 0.03), vec3(1.0, 0.62, 0.08), t * 2.0);
-     return mix(vec3(1.0, 0.62, 0.08), vec3(1.0, 0.97, 0.78), (t - 0.5) * 2.0);
+     return mix(vec3(0.82, 0.30, 0.08), vec3(1.00, 0.82, 0.38), t);
    }
-   vec3 c0 = vec3(0.06, 0.30, 0.18);
-   vec3 c1 = vec3(0.10, 0.52, 0.28);
-   vec3 c2 = vec3(0.20, 0.73, 0.37);
-   vec3 c3 = vec3(0.48, 0.88, 0.46);
-   vec3 c4 = vec3(0.84, 0.98, 0.66);
+   vec3 c0 = vec3(0.55, 0.08, 0.03);
+   vec3 c1 = vec3(0.85, 0.12, 0.03);
+   vec3 c2 = vec3(1.00, 0.30, 0.04);
+   vec3 c3 = vec3(1.00, 0.58, 0.08);
+   vec3 c4 = vec3(1.00, 0.86, 0.28);
    if (t < 0.25) return mix(c0, c1, t * 4.0);
    if (t < 0.50) return mix(c1, c2, (t - 0.25) * 4.0);
    if (t < 0.75) return mix(c2, c3, (t - 0.50) * 4.0);
@@ -310,7 +321,7 @@ bool OpenGLPointCloudNode::init_gl_resources() {
  void main() {
    vec3 color = u_height_color ? heightColor(v_height) : u_color;
    float brightness = 0.85;
-   if (v_intensity >= 0.0) {
+   if (v_intensity >= 0.0 && (u_height_color || u_intensity_color)) {
      float t = clamp((v_intensity - u_intensity_min) /
                      (u_intensity_max - u_intensity_min), 0.0, 1.0);
      if (u_equalize) {
@@ -322,19 +333,22 @@ bool OpenGLPointCloudNode::init_gl_resources() {
      // 256 color levels, indexed 0..255.
      t = floor(t * 255.0 + 0.5) / 255.0;
      if (u_height_color) brightness = 0.55 + 0.45 * sqrt(t);
-     else color = intensityColor(t);
+     else if (u_intensity_color) color = intensityColor(t);
    }
    if (u_height_color) {
      color *= brightness;
      if (u_current_frame) color = min(color * 1.08, vec3(1.0));
    }
-   if (u_dim_non_loop) {
-     if (v_loop_role > 0.5 && v_loop_role < 1.5) color = vec3(1.0, 0.08, 0.06);
-     else if (v_loop_role >= 1.5 && v_loop_role < 2.5) color = vec3(0.05, 1.0, 0.20);
-     else color = vec3(u_non_loop_brightness * (0.65 + 0.35 * brightness));
-   } else {
-     if (v_loop_role > 0.5 && v_loop_role < 1.5) color = vec3(1.0, 0.25, 0.15);
-     else if (v_loop_role >= 1.5 && v_loop_role < 2.5) color = vec3(0.1, 0.9, 1.0);
+   // Loop-role colors and dimming remain available in height and uniform modes.
+   if (!u_intensity_color) {
+     if (u_dim_non_loop) {
+       if (v_loop_role > 0.5 && v_loop_role < 1.5) color = vec3(1.0, 0.08, 0.06);
+       else if (v_loop_role >= 1.5 && v_loop_role < 2.5) color = vec3(0.05, 1.0, 0.20);
+       else color = vec3(u_non_loop_brightness);
+     } else {
+       if (v_loop_role > 0.5 && v_loop_role < 1.5) color = vec3(1.0, 0.25, 0.15);
+       else if (v_loop_role >= 1.5 && v_loop_role < 2.5) color = vec3(0.1, 0.9, 1.0);
+     }
    }
    FragColor = vec4(color, 1.0);
  }
@@ -470,6 +484,7 @@ void OpenGLPointCloudNode::draw_points_layer(const glm::mat4 &mvp, GLuint vao, b
     glUniform1f(glGetUniformLocation(shader_program_, "u_point_size"), current_frame ? point_size_ + (color_mode_ == "height_intensity" ? 0.3f : 1.0f) : point_size_);
     glUniform1i(glGetUniformLocation(shader_program_, "u_current_frame"), current_frame);
     glUniform1i(glGetUniformLocation(shader_program_, "u_height_color"), color_mode_ == "height_intensity");
+    glUniform1i(glGetUniformLocation(shader_program_, "u_intensity_color"), color_mode_ == "intensity");
     glUniform1i(glGetUniformLocation(shader_program_, "u_dim_non_loop"), show_loop_pairs_ && dim_non_loop_);
     glUniform1f(glGetUniformLocation(shader_program_, "u_non_loop_brightness"), non_loop_brightness_);
     glUniform1i(glGetUniformLocation(shader_program_, "u_equalize"), intensity_equalize_);
@@ -492,7 +507,7 @@ void OpenGLPointCloudNode::draw_points_layer(const glm::mat4 &mvp, GLuint vao, b
     glUseProgram(0);
 }
 
-void OpenGLPointCloudNode::draw_route_layer(const glm::mat4& mvp, GLuint vao, bool vbo_ready, size_t num_points_route, const glm::vec3& color) {
+void OpenGLPointCloudNode::draw_route_layer(const glm::mat4& mvp, GLuint vao, bool vbo_ready, size_t num_points_route, const glm::vec3& color, float width) {
     if (!vbo_ready || num_points_route == 0) {
         return;
     }
@@ -505,7 +520,9 @@ void OpenGLPointCloudNode::draw_route_layer(const glm::mat4& mvp, GLuint vao, bo
     glUniform3f(loc_color, color.x, color.y, color.z);
 
     glBindVertexArray(vao);
+    glLineWidth(width);
     glDrawArrays(GL_LINE_STRIP, 0, static_cast<GLsizei>(num_points_route));
+    glLineWidth(1.0f);
     glBindVertexArray(0);
     glUseProgram(0);
 }
@@ -522,8 +539,7 @@ void OpenGLPointCloudNode::on_key_frame_callback(const lio_msgs::msg::FrameData:
    if (!standalone_cloud_path_.empty()) return;
    if (msg->refresh_id != active_refresh_id_) return;
    if(!initialized_) {
-      std::string init_path = "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/Config/config.yaml";
-       if (loadVisNodeConfig(init_path)) {
+       if (loadVisNodeConfig(vis_config_path_)) {
            initialized_ = true;
        }
    }
@@ -561,6 +577,23 @@ void OpenGLPointCloudNode::on_key_frame_callback(const lio_msgs::msg::FrameData:
    pending_frames_.push_back(std::move(pf));
 }
 
+void OpenGLPointCloudNode::resolveGravityAlignment(const std::string& cloud_path) {
+    if (!gravity_aligned_ || gravity_alignment_checked_) return;
+    // Resolve once before accepting geometry, avoiding a mixture of display frames.
+    gravity_alignment_checked_ = true;
+    const auto slash = cloud_path.find_last_of("/\\");
+    const std::string path = (slash == std::string::npos ? "" : cloud_path.substr(0,slash+1)) + "gravity_alignment.yaml";
+    try {
+        const auto alignment = GravityAlignment::load(path);
+        for(int row=0;row<3;++row)for(int col=0;col<3;++col)
+            gravity_alignment_transform_[col][row]=static_cast<float>(alignment.rotation(row,col));
+        gravity_alignment_ready_ = true;
+        RCLCPP_INFO(get_logger(), "Gravity-aligned LiDAR view enabled: fixed %.4f deg rotation; saved estimates unchanged", alignment.tiltDegrees());
+    } catch(const std::exception& error) {
+        RCLCPP_WARN(get_logger(), "Gravity alignment unavailable (%s); keeping original coordinates for this viewer session", error.what());
+    }
+}
+
 void OpenGLPointCloudNode::consume_pending_frames() {
   std::deque<PendingFrame> local;
   {
@@ -570,6 +603,7 @@ void OpenGLPointCloudNode::consume_pending_frames() {
 
   for(auto& pf :  local) {
     if (pf.refresh_id_ != active_refresh_id_) continue;
+    resolveGravityAlignment(pf.cloud_path_);
     const PoseType camera_pose_type = layer2_.draw_map_ ? layer2_.map_pose_type_ :
         layer1_.draw_map_ ? layer1_.map_pose_type_ :
         layer2_.draw_route_ ? layer2_.route_pose_type_ : layer1_.route_pose_type_;
@@ -598,6 +632,7 @@ void OpenGLPointCloudNode::consume_pending_frames() {
             for (auto point : local_points) {
                 glm::vec4 q = pose * glm::vec4(point.p_[0], point.p_[1], point.p_[2], 1.0f);
                 if (hide_ground_ && q.z <= ground_z_) continue;
+                if (hide_negative_x_ && q.x < 0.0f) continue;
                 point.p_[0] = q.x; point.p_[1] = q.y; point.p_[2] = q.z;
                 point.loop_role_ = 0.0f;
                 current_frame_points_.push_back(point);
@@ -646,6 +681,7 @@ void OpenGLPointCloudNode::append_frame_to_layer(const PendingFrame &pf, const s
            for (const auto& p : local_points) {
                glm::vec4 q = T_map * glm::vec4(p.p_[0], p.p_[1], p.p_[2], 1.0f);
                if (hide_ground_ && q.z <= ground_z_) continue;
+               if (hide_negative_x_ && q.x < 0.0f) continue;
                PointVertex wp =p;
                wp.p_[0] = q.x;
                wp.p_[1] = q.y;
@@ -724,7 +760,7 @@ switch (pose) {
             return false;
         }
 
-        T = pf.lidar_pose_;
+        T = gravity_alignment_ready_ ? gravity_alignment_transform_ * pf.lidar_pose_ : pf.lidar_pose_;
         return true;
     }
 
@@ -853,10 +889,11 @@ bool OpenGLPointCloudNode::loadVisNodeConfig(const std::string &path) {
 
     return false;
    }
+    if (!gravity_aligned_override_ && vis["gravity_aligned"]) gravity_aligned_ = vis["gravity_aligned"].as<bool>();
     if (!current_frame_override_ && standalone_cloud_path_.empty() && vis["show_current_frame"])
         show_current_frame_ = vis["show_current_frame"].as<bool>();
     if (!accumulated_map_override_ && standalone_cloud_path_.empty())
-        show_accumulated_map_ = vis["show_accumulated_map"] && vis["show_accumulated_map"].as<bool>();
+        show_accumulated_map_ = !vis["show_accumulated_map"] || vis["show_accumulated_map"].as<bool>();
     if (intensity_equalize_ && cfg["backend"] && cfg["backend"]["in_kf_info_path"])
         loadIntensityDistribution(cfg["backend"]["in_kf_info_path"].as<std::string>());
     if (!hide_ground_override_ && camera_mode_ != "driving" && vis["hide_ground"])
@@ -875,7 +912,8 @@ bool OpenGLPointCloudNode::loadVisNodeConfig(const std::string &path) {
 
     RCLCPP_INFO(
         this->get_logger(),
-        "Loaded vis config");
+        "Loaded vis config: %s",
+        path.c_str());
 
     return true;
 }
@@ -965,6 +1003,9 @@ void OpenGLPointCloudNode::loadLayerConfig(const YAML::Node &node, RenderLayerCo
             route_color[0].as<float>(),
             route_color[1].as<float>(),
             route_color[2].as<float>());
+    layer.route_width_ = node["route_width"] ? node["route_width"].as<float>() : 2.0f;
+    if (!std::isfinite(layer.route_width_) || layer.route_width_ <= 0.0f)
+        throw std::invalid_argument("Route width must be positive");
 }
 
 PoseType OpenGLPointCloudNode::parsePoseType(const std::string &s) {
@@ -1063,14 +1104,16 @@ void OpenGLPointCloudNode::render_frame(float t){
         route_vao_1_,
         route_vbo_ready_1_,
         num_route_points_1_,
-        layer1_.route_color_);
+        layer1_.route_color_,
+        layer1_.route_width_);
 
     draw_route_layer(
         mvp,
         route_vao_2_,
         route_vbo_ready_2_,
         num_route_points_2_,
-        layer2_.route_color_
+        layer2_.route_color_,
+        layer2_.route_width_
         );
     }
   if (record_on_start_ && (driving_pose_ready_ || !standalone_cloud_path_.empty())) {

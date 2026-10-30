@@ -19,11 +19,12 @@
 #include <stdexcept>
 #include <mutex>
 #include <yaml-cpp/yaml.h>
+#include <filesystem>
 
 #include "../../include/KeyFrame.h"
 
 using namespace std;
-Frontend::Frontend(const std::string &init_path): init_path_(init_path) {
+Frontend::Frontend(const std::string &init_path, bool localization_test): localization_test_(localization_test), init_path_(init_path) {
 }
 
 
@@ -46,7 +47,11 @@ bool Frontend::Run() {
     try {
         lio_pipe_ptr_-> onPreprocess(
           [](std::shared_ptr<sensor_msgs::msg::PointCloud2>msg_ptr, PointCloud& pc, const LioOptions& options) {
-          if (!pc2ToPointCloudXYZIT(msg_ptr, pc, options.down_sample_ratio_, options.down_sample_)) {
+          if (!pc2ToPointCloudXYZIT(msg_ptr, pc, options.down_sample_ratio_,
+                                    options.down_sample_ && !options.use_imu_, true,
+                                    options.exclude_lidar_x_band_,
+                                    static_cast<float>(options.excluded_lidar_x_min_),
+                                    static_cast<float>(options.excluded_lidar_x_max_))) {
               throw std::runtime_error("Invalid point cloud layout or point timestamps");
           }
         }
@@ -62,7 +67,7 @@ bool Frontend::Run() {
            }
         );
         lio_pipe_ptr_->start();
-        bool is_initial = false;
+
 
         io_ptr_->onWait(
            [&]() ->void {
@@ -87,25 +92,17 @@ bool Frontend::Run() {
         });
         io_ptr_->onGps(
           [&](const sensor_msgs::msg::NavSatFix& msg, double bag_time_ns) {
-             //std::cout<< "gps time: "<<bag_time_ns<<std::endl;
-             double lat  = static_cast<double>(msg.latitude);
-             double lon  = static_cast<double>(msg.longitude);
-             double alt  = static_cast<double>(msg.altitude);
-
-             if(!is_initial) {
-               auto res= gps_.InitialRTK(lat,lon);
-
-             }
+             if (!std::isfinite(bag_time_ns) || bag_time_ns <= 0) return;
              GPSData gps_data;
-             gps_data.t_ = bag_time_ns;
-             gps_data.lat_ = lat;
-             gps_data.lon_ = lon;
-             gps_data.alt_ = alt;
-             gps_.Convert2UTM(gps_data);
-             //std::cout<< std::setprecision(10)<<"x: "<<gps_data.x_<<"\n";
-             //std::cout<< std::setprecision(10)<<"y: "<<gps_data.y_<<"\n";
-             //std::cout<< std::setprecision(10)<<"z: "<<gps_data.z_<<"\n";
-             gps_.GetPose(gps_data);
+             gps_data.t_ = bag_time_ns; // Callback supplies sensor time in seconds.
+             gps_data.lat_ = msg.latitude;
+             gps_data.lon_ = msg.longitude;
+             gps_data.alt_ = msg.altitude;
+             gps_data.valid_ = gnssFixUsable(msg, fe_options_.gnss_options_);
+             if (gps_data.valid_ && !gps_.initialized_)
+                 gps_data.valid_ = gps_.InitialRTK(msg.latitude, msg.longitude);
+             if (gps_data.valid_) gps_data.valid_ = gps_.Convert2UTM(gps_data) && gps_.GetPose(gps_data);
+             // Keep rejected fixes so interpolation cannot bridge a no-fix interval.
              gps_data_map_.emplace(bag_time_ns, gps_data);
           }
        );
@@ -167,6 +164,7 @@ bool Frontend::loadFrontendConfig() {
         }
 
         YAML::Node cfg = root["frontend"];
+        fe_options_.gnss_options_ = loadGnssOptions(root);
 
         // path
         if (cfg["ros_bag_path"]) {
@@ -178,11 +176,55 @@ bool Frontend::loadFrontendConfig() {
         if (cfg["use_imu"]) {
             lio_options.use_imu_ = cfg["use_imu"].as<bool>();
         }
+        if (cfg["synchronous_preprocessing"]) lio_options.synchronous_preprocessing_ = cfg["synchronous_preprocessing"].as<bool>();
+        if (cfg["excluded_lidar_x_band"]) {
+            const auto band=cfg["excluded_lidar_x_band"];
+            if (!band.IsSequence() || band.size()!=2)
+                throw std::invalid_argument("excluded_lidar_x_band must contain [min_x, max_x]");
+            lio_options.exclude_lidar_x_band_=true;
+            lio_options.excluded_lidar_x_min_=band[0].as<double>();
+            lio_options.excluded_lidar_x_max_=band[1].as<double>();
+            if (!std::isfinite(lio_options.excluded_lidar_x_min_) ||
+                !std::isfinite(lio_options.excluded_lidar_x_max_) ||
+                lio_options.excluded_lidar_x_max_<=lio_options.excluded_lidar_x_min_)
+                throw std::invalid_argument("excluded_lidar_x_band must be finite and increasing");
+            std::cout<<"Excluding LiDAR-frame x in ("<<lio_options.excluded_lidar_x_min_
+                     <<", "<<lio_options.excluded_lidar_x_max_<<") m before voxel filtering\n";
+        }
+        if (cfg["deskew_enabled"]) lio_options.deskew_enabled_ = cfg["deskew_enabled"].as<bool>();
+        if (cfg["imu_recovery"]) {
+            const auto recovery = cfg["imu_recovery"];
+            if (recovery["enabled"]) lio_options.imu_recovery_enabled_ = recovery["enabled"].as<bool>();
+            if (recovery["good_scans"]) {
+                const int count = recovery["good_scans"].as<int>();
+                if (count <= 0) throw std::invalid_argument("imu_recovery.good_scans must be positive");
+                lio_options.imu_recovery_good_scans_ = static_cast<size_t>(count);
+            }
+            if (!lio_options.imu_recovery_good_scans_) throw std::invalid_argument("imu_recovery.good_scans must be positive");
+        }
+        if (cfg["imu_prediction_log"]) lio_options.imu_prediction_log_ = cfg["imu_prediction_log"].as<bool>();
+        if (cfg["imu_prediction_log_path"]) lio_options.imu_prediction_log_path_ = cfg["imu_prediction_log_path"].as<std::string>();
         if (cfg["imu_acc_scale"]) {
             lio_options.imu_acc_scale_ = cfg["imu_acc_scale"].as<double>();
             if (!std::isfinite(lio_options.imu_acc_scale_) || lio_options.imu_acc_scale_ <= 0) {
                 throw std::invalid_argument("imu_acc_scale must be finite and positive");
             }
+        }
+        if (cfg["imu_lidar_extrinsic"]) {
+            const auto extrinsic = cfg["imu_lidar_extrinsic"];
+            const auto rotation = extrinsic["rotation"];
+            const auto translation = extrinsic["translation_m"];
+            if (!rotation.IsSequence() || rotation.size() != 9 ||
+                !translation.IsSequence() || translation.size() != 3) {
+                throw std::invalid_argument("imu_lidar_extrinsic needs a row-major 9-value rotation and 3-value translation_m");
+            }
+            Mat3d R;
+            Vec3d t;
+            for (int row = 0; row < 3; ++row) {
+                t[row] = translation[row].as<double>();
+                for (int col = 0; col < 3; ++col) R(row, col) = rotation[3 * row + col].as<double>();
+            }
+            lio_options.T_imu_lidar_ = LidarImuFrames::makeExtrinsic(R, t);
         }
         if (cfg["num_threads"]) {
             lio_options.num_threads_ = cfg["num_threads"].as<int>();
@@ -270,6 +312,7 @@ bool Frontend::loadFrontendConfig() {
 
         // eskf options
         ESKF::ESKFOptions eskf_options;
+        if (cfg["imu_route_path"]) eskf_options.out_pos_path_ = cfg["imu_route_path"].as<std::string>();
         if (cfg["imu_dt"]) {
             eskf_options.imu_dt_ = cfg["imu_dt"].as<double>();
         }
@@ -295,8 +338,56 @@ bool Frontend::loadFrontendConfig() {
             eskf_options.ang_noise_ = cfg["ang_noise"].as<double>() * (M_PI / 180.0);
         }
 
+        if (cfg["imu_initialization"]) {
+            const auto init = cfg["imu_initialization"];
+            auto& options = eskf_options.imu_initialization;
+            if (init["duration_sec"]) options.duration_sec = init["duration_sec"].as<double>();
+            if (init["min_samples"]) options.min_samples = init["min_samples"].as<size_t>();
+            if (init["max_gap_sec"]) options.max_gap_sec = init["max_gap_sec"].as<double>();
+            if (init["max_gyro_mean"]) options.max_gyro_mean = init["max_gyro_mean"].as<double>();
+            if (init["max_gyro_std"]) options.max_gyro_std = init["max_gyro_std"].as<double>();
+            if (init["max_acc_std"]) options.max_acc_std = init["max_acc_std"].as<double>();
+            if (init["max_gravity_error"]) options.max_gravity_error = init["max_gravity_error"].as<double>();
+        }
+
         lio_options.eskf_options_ = eskf_options;
         lio_options.lo_options_ = lo_options;
+
+        if(localization_test_) {
+            const auto loc=root["localization_test"];
+            if(!loc)throw std::invalid_argument("localization_test mode requires its YAML section");
+            auto& o=lio_options.localization_;o.enabled=true;
+            if(loc["seed_source"])o.seed_source=loc["seed_source"].as<std::string>();
+            if(o.seed_source!="motion"&&o.seed_source!="last_accepted"&&o.seed_source!="lo")
+                throw std::invalid_argument("localization_test.seed_source must be motion, last_accepted, or lo");
+            if(loc["reference_keyframes"])o.reference_keyframes=loc["reference_keyframes"].as<std::string>();
+            if(loc["reference_cloud"])o.reference_cloud=loc["reference_cloud"].as<std::string>();
+            if(loc["reference_stage"])o.reference_stage=loc["reference_stage"].as<std::string>();
+            auto read_pose=[](const YAML::Node& n)->SE3d {
+                if(!n.IsSequence()||n.size()!=7)throw std::invalid_argument("Pose requires [x,y,z,qx,qy,qz,qw]");
+                double v[7];for(int i=0;i<7;++i){v[i]=n[i].as<double>();if(!std::isfinite(v[i]))throw std::invalid_argument("Nonfinite pose");}
+                Eigen::Quaterniond q(v[6],v[3],v[4],v[5]);if(q.norm()<1e-12)throw std::invalid_argument("Zero quaternion");
+                return SE3d(q.normalized(),Vec3d(v[0],v[1],v[2]));
+            };
+            o.initial_pose=read_pose(loc["initial_pose"]);
+            if(loc["reference_cloud_pose"])o.reference_cloud_pose=read_pose(loc["reference_cloud_pose"]);
+            auto frame_value=[&](const char* key,size_t& value){if(loc[key]){const auto v=loc[key].as<long long>();if(v<0)throw std::invalid_argument("Negative frame index");value=size_t(v);}};
+            frame_value("start_frame",o.start_frame);frame_value("end_frame",o.end_frame);
+            auto number=[&](const char* key,double& value){if(loc[key])value=loc[key].as<double>();};
+            number("map_voxel_m",o.map_voxel_m);number("local_radius_m",o.local_radius_m);number("refresh_distance_m",o.refresh_distance_m);
+            number("min_coverage",o.min_coverage);number("max_inlier_rmse_m",o.max_inlier_rmse_m);number("max_correction_m",o.max_correction_m);number("max_correction_deg",o.max_correction_deg);
+            frame_value("min_matches",o.min_matches);
+            namespace fs=std::filesystem;
+            if(lio_options.out_cloud_dir_.empty())throw std::invalid_argument("Localization needs an isolated output directory");
+            const auto output=fs::weakly_canonical(lio_options.out_cloud_dir_);
+            if(fs::exists(output)&&(!fs::is_directory(output)||!fs::is_empty(output)))throw std::runtime_error("Localization output directory must be new or empty");
+            auto inside=[&](const std::string& path){auto relative=fs::weakly_canonical(path).lexically_relative(output);return !path.empty()&&!relative.empty()&&*relative.begin()!="..";};
+            if(!inside(lio_options.out_kf_info_path_)||!inside(lio_options.eskf_options_.out_pos_path_)||(!lio_options.imu_prediction_log_path_.empty()&&!inside(lio_options.imu_prediction_log_path_)))throw std::invalid_argument("All localization outputs must be inside out_cloud_dir");
+            fs::create_directories(output);
+            o.log_path=(output/"localization.csv").string();
+            if(o.end_frame)io_options.max_lidar_frames_=o.end_frame;
+            output_kf_=true;
+        }
 
         fe_options_.io_options_ = io_options;
         fe_options_.lio_options_ = lio_options;
@@ -363,6 +454,13 @@ void Frontend::saveCurrentKeyFrames() {
 
     if (key_frame_map_.empty()) return;
 
+    if(localization_test_) {
+        // Preserve reference-map coordinates. New-visit GNSS must not re-align them.
+        writeKeyFramesToFile(fe_options_.lio_options_.out_kf_info_path_,key_frame_map_);
+        std::cout<<"[Localization test] Saved accepted scan poses: "<<key_frame_map_.size()<<"\n";
+        return;
+    }
+
     std::map<size_t, std::shared_ptr<KeyFrame>> snapshot;
     for (const auto& it : key_frame_map_) {
         if (it.second) snapshot.emplace(it.first, std::make_shared<KeyFrame>(*it.second));
@@ -373,7 +471,7 @@ void Frontend::saveCurrentKeyFrames() {
         kf->rtk_valid_ = Interpolate_gps(
             kf->time_,
             kf,
-            gps_data_map_);
+            gps_data_map_, fe_options_.gnss_options_.max_gap_sec);
         kf->rtk_inlier_ = kf->rtk_valid_;
         if (!kf->rtk_valid_) {
             kf->rtk_pose_ = SE3d();

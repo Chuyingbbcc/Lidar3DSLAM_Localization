@@ -111,3 +111,16 @@ bool ImuBuffer::extractCovered(std::vector<ImuData>& out, double t0, double t1, 
     out.push_back(sample(t1));
     return true;
 }
+
+bool ImuBuffer::initialWindow(std::vector<ImuData>& out, double duration_sec) const {
+    out.clear();
+    if (!std::isfinite(duration_sec) || duration_sec <= 0) return false;
+    std::lock_guard<std::mutex> lock(m_);
+    if (buf_.empty()) return false;
+    const double end = buf_.front().t + duration_sec;
+    const auto last = std::lower_bound(buf_.begin(), buf_.end(), end,
+        [](const ImuData& sample, double time) { return sample.t < time; });
+    if (last == buf_.end()) return false;
+    out.assign(buf_.begin(), std::next(last));
+    return true;
+}

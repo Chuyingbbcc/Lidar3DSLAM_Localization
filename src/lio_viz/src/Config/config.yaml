@@ -1,10 +1,42 @@
+gnss:
+  max_interpolation_gap_sec: 1.0
+  max_horizontal_std_m: 10.0
 frontend:
-  use_imu: false
-  imu_acc_scale: 9.8  # Livox acceleration in g -> m/s^2; matches ESKF gravity.
-  max_lidar_frames: 1370
-  ros_bag_path: /media/chuchu/Extreme Pro/10_21_garden
-  out_cloud_dir: /home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/garden_output
-  out_kf_info_path: /home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/garden_output/kf_output.txt
+  use_imu: true
+  deskew_enabled: true
+  imu_recovery:
+    enabled: true
+    good_scans: 3
+  imu_prediction_log: true
+  imu_acc_scale: 9.8
+  imu_lidar_extrinsic:
+    rotation:
+      - 1
+      - 0
+      - 0
+      - 0
+      - 1
+      - 0
+      - 0
+      - 0
+      - 1
+    translation_m:
+      - -0.011
+      - -0.02329
+      - 0.04412
+  imu_initialization:
+    duration_sec: 5.0
+    min_samples: 500
+    max_gap_sec: 0.05
+    max_gyro_mean: 0.05
+    max_gyro_std: 0.02
+    max_acc_std: 0.15
+    max_gravity_error: 0.5
+  max_lidar_frames: 0
+  ros_bag_path: /media/chuchu/Extreme Pro/garden_rewrite
+  out_cloud_dir: /tmp/lio_run_oj8oeov7
+  out_kf_info_path: /tmp/lio_run_oj8oeov7/kf_output.txt
+  imu_route_path: /tmp/lio_run_oj8oeov7/route_imu.txt
   num_threads: 3
   slack_sec: 0.01
   down_sample_ratio: 0.3
@@ -13,14 +45,14 @@ frontend:
   kf_distance: 2
   kf_angle_degree: 5
   max_iterations: 20
-  voxel_size: 3
+  voxel_size: 2.0
   inv_voxel_size: 1.0
   min_effective_pts: 5
   min_pts_in_voxel: 5
   max_pts_in_voxel: 50
   eps: 1e-2
   res_outlier_threshold: 9.21
-  capacity: 700
+  capacity: 1000
   nearby_type: center
   imu_dt: 0.01
   gyro_var: 0.1
@@ -32,49 +64,88 @@ frontend:
   double ang_noise: 0.0174533;
 backend:
   sub_map_size: 30
-  in_cloud_dir: /home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/garden_output
-  in_kf_info_path: /home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/garden_output/kf_output.txt
+  in_cloud_dir: /home/chuchu/Lidar3DSLAM_Localization/output/backend_loop_only_20261022/frontend_input
+  in_kf_info_path: /home/chuchu/Lidar3DSLAM_Localization/output/backend_gnss_loop_integrated_20261022/loop_only_input.txt
   max_iterations: 20
-  voxel_size: 6
-  inv_voxel_size: 1.0
+  voxel_size: 1.5
+  inv_voxel_size: 2.0
   min_effective_pts: 10
   min_pts_in_voxel: 5
   max_pts_in_voxel: 50
   eps: 1e-3
   res_outlier_threshold: 9.21
-  capacity: 1000
+  capacity: 20000
   nearby_type: center
   sub_map_max_dist: 20.0
   sub_map_max_kf: 20
+  use_gnss: true
+  out_kf_info_path: /home/chuchu/Lidar3DSLAM_Localization/output/backend_loop_consensus_20261022/kf_output.txt
+  loop_candidate_log_path: /home/chuchu/Lidar3DSLAM_Localization/output/backend_loop_consensus_20261022/loop_candidates.csv
+  loop:
+    min_time_sec: 30.0
+    min_travel_m: 20.0
+    xy_radius_m: 6.0
+    z_radius_m: 3.0
+    query_interval_sec: 1.0
+    max_candidates: 5
+    history_group_sec: 5.0
+    window_half_sec: 1.0
+    duplicate_sec: 5.0
+    voxel_sizes_m:
+      - 2.0
+      - 1.0
+      - 0.5
+    max_correction_m: 2.0
+    max_correction_deg: 10.0
+    point_distance_m: 0.3
+    min_bidirectional_overlap: 0.6
+    max_point_rmse_m: 0.15
+    min_matched_points: 500
+    full_3d: true
+    consecutive_verification: true
+    consecutive_frames: 3
+    consecutive_min_matches: 75
+    consecutive_max_gap_sec: 0.3
+    consensus_translation_m: 0.25
+    consensus_rotation_deg: 2.0
+  gnss_xy_only: true
+  gnss_information_xy: 1.0e-06
+  gnss_min_interval_sec: 1.0
+  gnss_diagnostics_path: /home/chuchu/Lidar3DSLAM_Localization/output/backend_loop_consensus_20261022/gnss_diagnostics.csv
+  gnss_local_to_global: true
+  lio_information: 1000.0
+  loop_information: 50.0
+  gnss_huber_delta: 0.001
 vis:
+  gravity_aligned: false
   show_accumulated_map: true
-  show_current_frame: true
-  show_loop_pairs: false
-  dim_non_loop: false
-  hide_ground: true
+  show_current_frame: false
+  show_loop_pairs: true
+  dim_non_loop: true
+  hide_ground: false
   layer1:
-    draw_map: true
-    draw_route: true
-    map_pose: lidar
-    route_pose: lidar
+    draw_map: false
+    draw_route: false
+    map_pose: loop_optimization
+    route_pose: lidar_neu
     map_color:
       - 1
-      - 1
+      - 0
       - 1
     route_color:
       - 1
       - 0
       - 0
   layer2:
-    draw_map: false
+    draw_map: true
     draw_route: true
-    map_pose: lidar
-    route_pose: rtk
+    map_pose: loop_optimization
+    route_pose: loop_optimization
     map_color:
-      - 0
       - 1
-      - 0
+      - 1
+      - 1
     route_color:
       - 0
-      - 0
       - 1
+      - 0

@@ -66,6 +66,7 @@ class PointCloud {
     void clear() {
         pts_.clear();
         has_point_timing_ = false;
+        deskewed_ = false;
         scan_start_ns_ = scan_end_ns_ = pose_time_ns_ = 0;
         time_ = 0;
         has_bbox_ = false;
@@ -79,6 +80,11 @@ class PointCloud {
     }
     void setTime(const double t) {time_ = t;}
     bool hasPointTiming() const { return has_point_timing_; }
+    bool isDeskewed() const { return deskewed_; }
+    void markDeskewed() {
+        if (!has_point_timing_) throw std::logic_error("Deskew metadata requires acquisition timing");
+        deskewed_ = true;
+    }
     int64_t scanStartNs() const { return scan_start_ns_; }
     int64_t scanEndNs() const { return scan_end_ns_; }
     int64_t poseTimeNs() const { return pose_time_ns_; }
@@ -87,6 +93,7 @@ class PointCloud {
         scan_start_ns_ = start_ns;
         scan_end_ns_ = pose_time_ns_ = end_ns;
         has_point_timing_ = true;
+        deskewed_ = false;
         time_ = static_cast<double>(pose_time_ns_) * 1e-9;
     }
 
@@ -142,6 +149,7 @@ class PointCloud {
     std::vector<Point> pts_;
     double time_ = 0;
     bool has_point_timing_ = false;
+    bool deskewed_ = false;
     int64_t scan_start_ns_ = 0, scan_end_ns_ = 0, pose_time_ns_ = 0;
 
     bool has_bbox_ = false;
@@ -268,14 +276,19 @@ inline bool pc2ToPointCloudXYZIT(
     PointCloud& out,
     float voxel_size,
     bool down_sample,
-    bool skip_nan = true)
+    bool skip_nan = true,
+    bool exclude_x_band = false,
+    float excluded_x_min = 0.0f,
+    float excluded_x_max = 0.0f)
 {
     const double fallback_time = out.get_time();
     out.clear();
     if (msg_ptr->point_step == 0 || msg_ptr->width == 0) return false;
     if (msg_ptr->row_step < static_cast<uint64_t>(msg_ptr->width) * msg_ptr->point_step ||
         msg_ptr->data.size() < static_cast<uint64_t>(msg_ptr->row_step) * msg_ptr->height ||
-        (down_sample && (!std::isfinite(voxel_size) || voxel_size <= 0))) return false;
+        (down_sample && (!std::isfinite(voxel_size) || voxel_size <= 0)) ||
+        (exclude_x_band && (!std::isfinite(excluded_x_min) || !std::isfinite(excluded_x_max) ||
+                            excluded_x_max <= excluded_x_min))) return false;
 
     const auto fmap = buildFieldMap(msg_ptr);
     auto itx = fmap.find("x");
@@ -366,7 +379,8 @@ inline bool pc2ToPointCloudXYZIT(
                 continue;
             }
 
-            if (z < -1 || x < -40 || x > 40 || y < -40 || y > 40 || z>5) {
+            if (z < 0 || x < -7 || x > 7 || y < -7 || y > 7 || z > 10 ||
+                (exclude_x_band && x > excluded_x_min && x < excluded_x_max)) {
                 continue;
             }
 
@@ -428,7 +442,8 @@ inline bool pc2ToPointCloudXYZIT(
             continue;
         }
 
-        if (z < -1 || x < -40 || x > 40 || y < -40 || y > 40 || z>5) {
+        if (z < 0 || x < -7 || x > 7 || y < -7 || y > 7 || z > 10 ||
+            (exclude_x_band && x > excluded_x_min && x < excluded_x_max)) {
             continue;
         }
 
@@ -508,8 +523,9 @@ inline bool pc2ToPointCloudXYZIT(
 
     return true;
 }
-// Optional .timing companion: LIOTIME1, int64 start/end/reference nanoseconds,
-// uint64 point count, then int64 acquisition offsets, in native little-endian order.
+// Optional .timing companion: LIOTIME2, int64 start/end/reference nanoseconds,
+// uint64 point count/flags, then int64 offsets. Flag bit 0 means deskewed.
+// Native little-endian encoding; the reader also accepts legacy LIOTIME1.
 inline bool writePointTiming(const std::string& path, const PointCloud& points) {
     if (!points.hasPointTiming()) {
         // A legacy rewrite must not leave a stale timing companion behind.
@@ -521,9 +537,11 @@ inline bool writePointTiming(const std::string& path, const PointCloud& points) 
     std::ofstream file(path + ".timing", std::ios::binary | std::ios::trunc);
     const int64_t times[] = {points.scanStartNs(), points.scanEndNs(), points.poseTimeNs()};
     const uint64_t count = points.size();
-    file.write("LIOTIME1", 8);
+    const uint64_t flags = points.isDeskewed() ? 1 : 0;
+    file.write("LIOTIME2", 8);
     file.write(reinterpret_cast<const char*>(times), sizeof(times));
     file.write(reinterpret_cast<const char*>(&count), sizeof(count));
+    file.write(reinterpret_cast<const char*>(&flags), sizeof(flags));
     for (const auto& p : points) file.write(reinterpret_cast<const char*>(&p.offset_ns), sizeof(p.offset_ns));
     file.close();
     return bool(file);
@@ -537,15 +555,20 @@ inline bool loadPointTiming(const std::string& path, PointCloud& points) {
     char magic[8];
     int64_t times[3];
     uint64_t count;
-    if (!file.read(magic, 8) || std::memcmp(magic, "LIOTIME1", 8) ||
+    if (!file.read(magic, 8) ||
+        (std::memcmp(magic, "LIOTIME1", 8) && std::memcmp(magic, "LIOTIME2", 8)) ||
         !file.read(reinterpret_cast<char*>(times), sizeof(times)) ||
         !file.read(reinterpret_cast<char*>(&count), sizeof(count))) return false;
-    if (count != points.size() || bytes != static_cast<std::streamoff>(40 + points.size() * sizeof(int64_t)) ||
+    uint64_t flags = 0;
+    const bool version2 = std::memcmp(magic, "LIOTIME2", 8) == 0;
+    if (version2 && (!file.read(reinterpret_cast<char*>(&flags), sizeof(flags)) || (flags & ~uint64_t(1)))) return false;
+    if (count != points.size() || bytes != static_cast<std::streamoff>((version2 ? 48 : 40) + points.size() * sizeof(int64_t)) ||
         times[0] < 0 || times[1] < times[0] || times[2] != times[1]) return false;
     std::vector<int64_t> offsets(count);
     if (!file.read(reinterpret_cast<char*>(offsets.data()), count * sizeof(int64_t))) return false;
     for (auto offset : offsets) if (offset < 0 || offset > times[1] - times[0]) return false;
     points.setScanTiming(times[0], times[1]);
+    if (flags & 1) points.markDeskewed();
     for (size_t i = 0; i < count; ++i) {
         points[i].offset_ns = offsets[i];
         points[i].t = static_cast<float>(offsets[i] * 1e-9);

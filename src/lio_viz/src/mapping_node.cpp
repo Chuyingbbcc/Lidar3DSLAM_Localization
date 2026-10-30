@@ -67,16 +67,18 @@ void signalHandler(int sig) {
 MappingNode::MappingNode(): Node("mapping_node") {
 this->declare_parameter<std::string>("mode", "mapping");
 mode_ = this->get_parameter("mode").as_string();
+if(mode_=="localization test")mode_="localization_test";
 replay_speed_ = declare_parameter<double>("replay_speed", 1.0);
 if (!std::isfinite(replay_speed_) || replay_speed_ <= 0)
     throw std::invalid_argument("replay_speed must be finite and positive");
+const std::string replay_keyframes_override = declare_parameter<std::string>("replay_keyframes_path", "");
 std::cout<<"Current mode is: "<<mode_<<std::endl;
 
 pub_ = create_publisher<std_msgs::msg::String>("pcd_path", 10);
 frame_pub_ = create_publisher<lio_msgs::msg::FrameData>("frame_data", 10);
 const std::string init_path = declare_parameter<std::string>("config_path",
     "/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/Config/config.yaml");
-frontend_ptr_ = std::make_unique<Frontend>(init_path);
+frontend_ptr_ = std::make_unique<Frontend>(init_path,mode_=="localization_test");
 //run frontend
 
 //pause/resume control
@@ -93,7 +95,7 @@ loop_resume_sub_ = create_subscription<std_msgs::msg::UInt64>(
             1, std::bind( &MappingNode::onLoopResume, this,
                 std::placeholders::_1));
 
-if (mode_  == "mapping") {
+if (mode_  == "mapping" || mode_=="localization_test") {
   writeVisualizationConfig(init_path, MapMode::frontend);
   slam_thread_ = std::thread([this]() {
     try {
@@ -118,7 +120,21 @@ if (mode_ == "roptimization") {
   writeVisualizationConfig(init_path, MapMode::replay_optimization);
 }
   std::map<size_t, std::shared_ptr<KeyFrame>>kf_map;
-  loadKeyFrames("/home/chuchu/Lidar3DSLAM_Localization/src/lio_viz/src/garden_output/kf_output.txt", kf_map);
+  std::string replay_keyframes_path = replay_keyframes_override;
+  if (replay_keyframes_path.empty()) {
+      const auto cfg = YAML::LoadFile(init_path);
+      if (cfg["backend"]["out_kf_info_path"])
+          replay_keyframes_path = cfg["backend"]["out_kf_info_path"].as<std::string>();
+      else if (cfg["backend"]["in_kf_info_path"])
+          replay_keyframes_path = cfg["backend"]["in_kf_info_path"].as<std::string>();
+  }
+  if (replay_keyframes_path.empty())
+      throw std::runtime_error("Replay mode requires backend.out_kf_info_path or replay_keyframes_path");
+  loadKeyFrames(replay_keyframes_path, kf_map);
+  if (kf_map.empty())
+      throw std::runtime_error("No replay keyframes loaded from " + replay_keyframes_path);
+  RCLCPP_INFO(get_logger(), "Loaded %zu keyframes for replay from %s",
+      kf_map.size(), replay_keyframes_path.c_str());
   for(auto it : kf_map) {
     replay_kf_q_.push(it.second);
   }
@@ -263,7 +279,7 @@ void MappingNode::publish_frame() {
   // if (mode_ == "optimization") {
   //   return;
   // }
-  if (mode_ == "mapping") {
+  if (mode_ == "mapping" || mode_=="localization_test") {
     nxt_kf_ptr = frontend_ptr_->takeNextKeyFrame();
  }
  else {
@@ -350,7 +366,7 @@ void MappingNode::publishKeyFrameForVis(
 }
 
 void MappingNode::stop_and_save() {
-    if (frontend_ptr_ && mode_ == "mapping") {
+    if (frontend_ptr_ && (mode_ == "mapping" || mode_=="localization_test")) {
         std::cout<< "stop mapping mode!"<<std::endl;
         frontend_ptr_->requestStop();
         if (slam_thread_.joinable()) slam_thread_.join();
@@ -381,12 +397,14 @@ void MappingNode::writeVisualizationConfig(
     }
 
     cfg["vis"]["show_accumulated_map"] =
-        mode == MapMode::replay_frontend || mode == MapMode::replay_optimization || mode == MapMode::frontend;
-    cfg["vis"]["show_current_frame"] = mode != MapMode::replay_optimization && mode != MapMode::replay_frontend;
+        mode == MapMode::optimization || mode == MapMode::replay_frontend ||
+        mode == MapMode::replay_optimization || mode == MapMode::frontend;
+    cfg["vis"]["show_current_frame"] = mode == MapMode::frontend;
     cfg["vis"]["show_loop_pairs"] = mode == MapMode::optimization ||
-        mode == MapMode::replay_frontend || mode == MapMode::replay_optimization;
-    cfg["vis"]["dim_non_loop"] = mode == MapMode::replay_frontend || mode == MapMode::replay_optimization;
-    cfg["vis"]["hide_ground"] = mode != MapMode::replay_frontend && mode != MapMode::replay_optimization;
+        mode == MapMode::replay_frontend;
+    cfg["vis"]["dim_non_loop"] = mode == MapMode::optimization ||
+        mode == MapMode::replay_frontend;
+    cfg["vis"]["hide_ground"] = mode == MapMode::frontend;
 
     auto makeColorNode = [](const std::array<float, 3>& c) {
         YAML::Node node;
@@ -411,6 +429,7 @@ void MappingNode::writeVisualizationConfig(
         layer["route_pose"] = route_pose;
         layer["map_color"] = makeColorNode(map_color);
         layer["route_color"] = makeColorNode(route_color);
+        layer["route_width"] = 2.0f;
     };
 
     if (mode == MapMode::frontend) {
@@ -432,13 +451,16 @@ void MappingNode::writeVisualizationConfig(
                  {0, 1, 0}, {0, 1, 0});
     }
     else if (mode == MapMode::replay_optimization) {
-        setLayer(cfg["vis"]["layer1"], false, false,
+        // Route-only frontend versus optimized comparison.
+        setLayer(cfg["vis"]["layer1"], false, true,
                  "lidar_neu", "lidar_neu",
-                 {1, 1, 1}, {0.4f, 0.4f, 0.45f});
+                 {1, 1, 1}, {1.0f, 0.18f, 0.05f});
+        cfg["vis"]["layer1"]["route_width"] = 2.0f;
 
-        setLayer(cfg["vis"]["layer2"], true, true,
+        setLayer(cfg["vis"]["layer2"], false, true,
                  "loop_optimization", "loop_optimization",
-                 {1, 1, 1}, {0.4f, 0.4f, 0.45f});
+                 {1, 1, 1}, {0.05f, 1.0f, 0.20f});
+        cfg["vis"]["layer2"]["route_width"] = 1.0f;
     }
     else if (mode == MapMode::optimization) {
         setLayer(cfg["vis"]["layer1"], false, false,
@@ -579,7 +601,7 @@ void MappingNode::runOptimizationMode(const std::string& init_path) {
     }
     if (backend.getKeyFrames().empty()) return; // Never replace input with an empty checkpoint.
     const auto config = YAML::LoadFile(init_path);
-    const std::string kf_path = config["backend"]["in_kf_info_path"].as<std::string>();
+    const std::string kf_path = config["backend"]["out_kf_info_path"] ? config["backend"]["out_kf_info_path"].as<std::string>() : config["backend"]["in_kf_info_path"].as<std::string>();
     writeKeyFramesToFile(kf_path, backend.getKeyFrames());
     backend.writeEvaluationLoops(kf_path + ".loops.txt");
     RCLCPP_INFO(get_logger(), "Saved %zu backend keyframes to %s%s",

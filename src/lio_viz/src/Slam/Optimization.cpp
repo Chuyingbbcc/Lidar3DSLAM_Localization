@@ -7,6 +7,7 @@
 #include <g2o/core/block_solver.h>
 #include <g2o/core/base_unary_edge.h>
 #include <g2o/core/base_binary_edge.h>
+#include <g2o/core/base_vertex.h>
 #include <g2o/core/optimization_algorithm_levenberg.h>
 #include <g2o/core/robust_kernel_impl.h>
 
@@ -27,8 +28,7 @@ class EdgeSE3GPS: public g2o::BaseUnaryEdge<3, Vec3d, g2o::VertexSE3> {
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
     void computeError() override {
         const auto* v = static_cast<const g2o::VertexSE3*>(_vertices[0]);
-        const SE3d& T = SE3d(v->estimate().matrix());
-        Vec3d pred = T.translation();
+        Vec3d pred = v->estimate().translation();
         _error = pred - _measurement;
     }
 
@@ -37,6 +37,61 @@ class EdgeSE3GPS: public g2o::BaseUnaryEdge<3, Vec3d, g2o::VertexSE3> {
        const auto* v = static_cast<const g2o::VertexSE3*>(_vertices[0]);
        // VertexSE3 applies right increments: t_new = t + R * delta_t.
        _jacobianOplusXi.block<3,3>(0,0) = v->estimate().rotation();
+    }
+    bool read(std::istream&) override { return false; }
+    bool write(std::ostream&) const override { return false; }
+};
+
+// GNSS refinement preserves the accepted baseline's height and gravity direction.
+class PlanarPoseVertex : public g2o::BaseVertex<3, SE3d> {
+public:
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+    void setToOriginImpl() override { _estimate=SE3d(); }
+    void oplusImpl(const double* update) override {
+        Vec3d t=_estimate.translation();t.x()+=update[0];t.y()+=update[1];
+        _estimate=SE3d(SO3d::exp(Vec3d(0,0,update[2]))*_estimate.so3(),t);
+    }
+    bool read(std::istream&) override { return false; }
+    bool write(std::ostream&) const override { return false; }
+};
+class PlanarRelativeEdge : public g2o::BaseBinaryEdge<6, SE3d, PlanarPoseVertex, PlanarPoseVertex> {
+public:
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+    void computeError() override {
+        const auto* a=static_cast<const PlanarPoseVertex*>(_vertices[0]);
+        const auto* b=static_cast<const PlanarPoseVertex*>(_vertices[1]);
+        const SE3d difference=_measurement.inverse()*a->estimate().inverse()*b->estimate();
+        _error.head<3>()=difference.translation();
+        auto q=difference.unit_quaternion();if(q.w()<0)q.coeffs()*=-1;
+        _error.tail<3>()=q.vec(); // Same MQT rotational residual as g2o EdgeSE3.
+    }
+    bool read(std::istream&) override { return false; }
+    bool write(std::ostream&) const override { return false; }
+};
+class PlanarGpsEdge : public g2o::BaseUnaryEdge<2, Vec2d, PlanarPoseVertex> {
+public:
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+    void computeError() override {
+        const auto* v=static_cast<const PlanarPoseVertex*>(_vertices[0]);
+        _error=v->estimate().translation().head<2>()-_measurement;
+    }
+    void linearizeOplus() override {_jacobianOplusXi.setZero();_jacobianOplusXi(0,0)=1;_jacobianOplusXi(1,1)=1;}
+    bool read(std::istream&) override { return false; }
+    bool write(std::ostream&) const override { return false; }
+};
+
+// A two-dimensional factor cannot introduce a height residual or height information.
+class EdgeSE3GPSXY : public g2o::BaseUnaryEdge<2, Vec2d, g2o::VertexSE3> {
+public:
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+    void computeError() override {
+        const auto* v=static_cast<const g2o::VertexSE3*>(_vertices[0]);
+        _error=v->estimate().translation().head<2>()-_measurement;
+    }
+    void linearizeOplus() override {
+        _jacobianOplusXi.setZero();
+        const auto* v=static_cast<const g2o::VertexSE3*>(_vertices[0]);
+        _jacobianOplusXi.block<2,3>(0,0)=v->estimate().rotation().topRows<2>();
     }
     bool read(std::istream&) override { return false; }
     bool write(std::ostream&) const override { return false; }
@@ -93,11 +148,16 @@ void PoseGraphOptimizer::getOptimizedPoses(std::map<size_t,SE3d >& poses_map){
       return;
    }
    for(size_t i=0; i<nodes_.size(); i++) {
+       if(stage_==OptimizationStage::GNSS_XY_PLANAR) {
+           auto* v=dynamic_cast<PlanarPoseVertex*>(optimizer_->vertex(static_cast<int>(nodes_[i].id_)));
+           if(v)poses_map[nodes_[i].id_]=v->estimate();
+           continue;
+       }
        auto * v = dynamic_cast<g2o::VertexSE3*>(optimizer_ ->vertex(static_cast<int>(nodes_[i].id_)));
        if (!v ) {
         continue;
        }
-      poses_map[nodes_[i].id_] = SE3d(v->estimate().matrix());
+      poses_map[nodes_[i].id_] = normalizedOptimizerPose(v->estimate());
   }
 }
 
@@ -110,7 +170,7 @@ bool PoseGraphOptimizer::buildOptimizer() {
     pose → 6 DOF (SE3)
     landmark → 3 DOF (gps XYZ)
     */
-    using BlockSolverType = g2o::BlockSolver< g2o::BlockSolverTraits<6, 6>>;
+    using BlockSolverType = g2o::BlockSolver< g2o::BlockSolverTraits<Eigen::Dynamic, Eigen::Dynamic>>;
     /*
      *  So after g2o linearizes your problem, it gets a matrix equation, and LinearSolverCholmod is the tool used to solve that equation.
     *  CHOLMOD is a sparse linear algebra library designed for matrices that are: sparse symmetric positive definite
@@ -143,6 +203,9 @@ void PoseGraphOptimizer::addVertices() {
    for (size_t i=0; i<nodes_.size(); ++i) {
       const auto&node = nodes_[i];
 
+      if(stage_==OptimizationStage::GNSS_XY_PLANAR) {
+          auto* v=new PlanarPoseVertex();v->setId(static_cast<int>(node.id_));v->setEstimate(node.pose_init_);v->setFixed(i==0);optimizer_->addVertex(v);continue;
+      }
       auto* v = new g2o::VertexSE3();
       v->setId(static_cast<int>(node.id_));
       v->setEstimate(Eigen::Isometry3d(node.pose_init_.matrix()));
@@ -195,6 +258,11 @@ void PoseGraphOptimizer::addRelativeEdges() {
         return;
     }
     for (const auto& e: edges_) {
+        if(stage_==OptimizationStage::GNSS_XY_PLANAR) {
+            auto* edge=new PlanarRelativeEdge();edge->setVertex(0,optimizer_->vertex(static_cast<int>(e.id_i_)));edge->setVertex(1,optimizer_->vertex(static_cast<int>(e.id_j_)));
+            edge->setMeasurement(e.T_i_j_);edge->setInformation(e.info_);
+            auto* kernel=new g2o::RobustKernelHuber();kernel->setDelta(2);edge->setRobustKernel(kernel);optimizer_->addEdge(edge);continue;
+        }
         auto* edge = new g2o::EdgeSE3();
 
         edge->setVertex(
@@ -228,13 +296,26 @@ void PoseGraphOptimizer::addGpsEdges() {
        if(!node.has_gps_ || !node.gps_pos_.allFinite()) {
            continue;
        }
+       if(stage_==OptimizationStage::GNSS_XY_PLANAR) {
+           auto* edge=new PlanarGpsEdge();edge->setVertex(0,optimizer_->vertex(static_cast<int>(node.id_)));edge->setMeasurement(node.gps_pos_.head<2>());edge->setInformation(gps_info_.topLeftCorner<2,2>());
+           auto* kernel=new g2o::RobustKernelHuber();kernel->setDelta(gps_huber_delta_);edge->setRobustKernel(kernel);optimizer_->addEdge(edge);continue;
+       }
+       if(gps_info_(2,2)==0) {
+           if(gps_info_.topLeftCorner<2,2>().isZero()) continue;
+           auto* edge=new EdgeSE3GPSXY();
+           edge->setVertex(0,optimizer_->vertex(static_cast<int>(node.id_)));
+           edge->setMeasurement(node.gps_pos_.head<2>());
+           edge->setInformation(gps_info_.topLeftCorner<2,2>());
+           auto* kernel=new g2o::RobustKernelHuber();kernel->setDelta(gps_huber_delta_);edge->setRobustKernel(kernel);
+           optimizer_->addEdge(edge);continue;
+       }
        auto* edge = new EdgeSE3GPS();
        edge->setVertex(0, optimizer_->vertex(static_cast<int>(node.id_)));
        edge->setMeasurement(node.gps_pos_);
         edge->setInformation(gps_info_);
 
         auto* rk = new g2o::RobustKernelHuber();
-        rk->setDelta(2.0);
+        rk->setDelta(gps_huber_delta_);
         edge->setRobustKernel(rk);
 
         optimizer_->addEdge(edge);

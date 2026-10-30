@@ -7,12 +7,27 @@
 #include <functional>
 #include <memory>
 #include <map>
+#include <stdexcept>
+
+inline SE3d normalizedOptimizerPose(const Eigen::Isometry3d& estimate) {
+    const Mat3d rotation = estimate.linear();
+    if (!estimate.matrix().allFinite() ||
+        !(rotation.transpose() * rotation).isApprox(Mat3d::Identity(), 1e-6) ||
+        std::abs(rotation.determinant() - 1.0) > 1e-6) {
+        throw std::runtime_error("Optimizer returned an invalid pose");
+    }
+    Eigen::Quaterniond quaternion(rotation);
+    quaternion.normalize();
+    return SE3d(quaternion, estimate.translation());
+}
+
 
 
 enum class  OptimizationStage {
    KF_RTK_OPTI =0,
    SUBMAP_NDT,
-   LOOP_CLOSURE
+   LOOP_CLOSURE,
+   GNSS_XY_PLANAR
 };
 namespace g2o {
     class SparseOptimizer;
@@ -39,6 +54,10 @@ public:
     void setNodes(const std::vector<Node>& nodes);
     void setEdges(const std::vector<Edge>& edges);
     void setGpsInfo(Mat3d& gps_info);
+    void setGpsHuberDelta(double delta) {
+        if(!std::isfinite(delta) || delta<=0)throw std::invalid_argument("Invalid GNSS Huber delta");
+        gps_huber_delta_=delta;
+    }
     bool optimize(int iterations = 20);
     void setStopRequested(std::function<bool()> stop) { stop_requested_ = std::move(stop); }
     void getOptimizedPoses(std::map<size_t,SE3d >& poses_map);
@@ -51,6 +70,7 @@ private:
     OptimizationStage stage_;
 
     Mat3d gps_info_ = Mat3d::Zero();
+    double gps_huber_delta_=2;
 
     bool buildOptimizer();
     void addVertices();

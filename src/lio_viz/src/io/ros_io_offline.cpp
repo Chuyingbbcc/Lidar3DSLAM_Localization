@@ -170,6 +170,7 @@ bool RosIoOffline::go() {
       rclcpp::SerializedMessage serialized(*bag_msg->serialized_data);
       gps_ser.deserialize_message(&serialized, &msg);
       double gps_msg_t = extractTime(msg.header, bag_msg->time_stamp, last_gps_time_);
+      if (io_options_.max_gps_time_ > 0 && gps_msg_t > io_options_.max_gps_time_) break;
       ++gps_n;
       gps_cb_(msg, gps_msg_t);
       last_gps_time_ = gps_msg_t;

@@ -20,8 +20,11 @@ bool ThreadPool::try_enqueue(std::function<void()> f) {
       std::lock_guard<std::mutex>lk(m_);
       if(stopped_.load())return false;
 
-      if(max_queue_ >0  && tasks_.size() >= max_queue_)return false;
+      if(max_queue_ >0  && tasks_.size() >= max_queue_) { rejected_.fetch_add(1); return false; }
       tasks_.push(std::move(task));
+      const size_t depth=tasks_.size();
+      size_t peak=max_queued_.load();
+      while(depth>peak&&!max_queued_.compare_exchange_weak(peak,depth)){}
    }
    cv_not_empty_.notify_one();
    return true;

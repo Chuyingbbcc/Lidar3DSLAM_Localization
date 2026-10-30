@@ -30,6 +30,8 @@ public:
 
     void stop();
     void closeInput();
+    size_t maxHeapDepth() const { return max_heap_depth_.load(); }
+    size_t maxReadyDepth() const { return max_ready_depth_.load(); }
 
 private:
     struct HeapItem {
@@ -60,6 +62,8 @@ private:
     std::condition_variable cv_heap_;
     std::priority_queue<HeapItem, std::vector<HeapItem>, Cmp> heap_;
     std::atomic<std::uint64_t> tie_counter_{0};
+    std::atomic<size_t> max_heap_depth_{0};
+    std::atomic<size_t> max_ready_depth_{0};
 
     // ordered ready queue
     std::mutex m_ready_;

@@ -13,6 +13,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <cmath>
 
 ESKF::ESKF(const ESKFOptions &opt): options_(opt){
    BuildNoise();
@@ -23,6 +24,84 @@ ESKF::ESKF(const ESKFOptions &opt): options_(opt){
    ofs_<< std::fixed << std::setprecision(6);
 }
 
+
+StationaryImuResult ESKF::EstimateStationary(const std::vector<ImuData>& samples,
+                                             const StationaryImuOptions& options) {
+    StationaryImuResult result;
+    auto reject = [&](const std::string& reason) { result.reason = reason; return result; };
+    for (double value : {options.duration_sec, options.max_gap_sec, options.max_gyro_mean,
+                         options.max_gyro_std, options.max_acc_std, options.max_gravity_error}) {
+        if (!std::isfinite(value) || value <= 0) return reject("Initialization thresholds must be finite and positive");
+    }
+    if (options.min_samples < 2) return reject("Initialization needs at least two samples");
+    result.samples = samples.size();
+    if (samples.size() < options.min_samples) return reject("Insufficient stationary IMU samples");
+    for (size_t i = 0; i < samples.size(); ++i) {
+        const auto& sample = samples[i];
+        if (!std::isfinite(sample.t) || !sample.acc.allFinite() || !sample.gyro.allFinite())
+            return reject("Nonfinite IMU measurement in initialization window");
+        if (i && (sample.t <= samples[i-1].t || sample.t - samples[i-1].t > options.max_gap_sec))
+            return reject("Timestamp gap or nonmonotonic IMU initialization window");
+        result.mean_acc += sample.acc;
+        result.gyro_bias += sample.gyro;
+    }
+    result.duration_sec = samples.back().t - samples.front().t;
+    if (result.duration_sec + 1e-6 < options.duration_sec) return reject("Stationary IMU window is too short");
+    result.mean_acc /= samples.size();
+    result.gyro_bias /= samples.size();
+    double acc_variance = 0, gyro_variance = 0;
+    for (const auto& sample : samples) {
+        acc_variance += (sample.acc - result.mean_acc).squaredNorm();
+        gyro_variance += (sample.gyro - result.gyro_bias).squaredNorm();
+    }
+    result.acc_std = std::sqrt(acc_variance / samples.size());
+    result.gyro_std = std::sqrt(gyro_variance / samples.size());
+    if (!std::isfinite(result.mean_acc.norm()) || result.mean_acc.norm() < 1e-6 ||
+        std::abs(result.mean_acc.norm() - 9.8) > options.max_gravity_error)
+        return reject("Acceleration magnitude inconsistent with gravity; check units and stationarity");
+    if (result.gyro_bias.norm() > options.max_gyro_mean || result.gyro_std > options.max_gyro_std ||
+        result.acc_std > options.max_acc_std)
+        return reject("Initial IMU window is not sufficiently stationary");
+    // Keep registration's initial map frame. Gravity need not be along map -Z.
+    // A single pose cannot separate accelerometer bias from gravity/tilt.
+    result.gravity = -9.8 * result.mean_acc.normalized();
+    result.valid = true;
+    result.reason = "Stationary initialization accepted";
+    return result;
+}
+
+StationaryImuResult ESKF::InitializeStationary(const std::vector<ImuData>& samples) {
+    const auto result = EstimateStationary(samples, options_.imu_initialization);
+    if (!result.valid) return result; // Rejection leaves the current filter untouched.
+    cur_t_ = samples.back().t;
+    R_ = SO3d();
+    p_.setZero();
+    v_.setZero();
+    bg_ = result.gyro_bias;
+    ba_.setZero();
+    g_ = result.gravity;
+    dx_.setZero();
+    cov_.setIdentity();
+    return result;
+}
+
+void ESKF::ReanchorAfterGap(double time, const SE3d& imu_pose, const Vec3d& velocity) {
+    if (!std::isfinite(time) || time < cur_t_ || !imu_pose.matrix().allFinite() || !velocity.allFinite())
+        throw std::invalid_argument("Invalid LO state for IMU recovery");
+    cur_t_ = time;
+    R_ = imu_pose.so3();
+    p_ = imu_pose.translation();
+    v_ = velocity;
+    dx_.setZero();
+    // Keep learned bias/gravity and their covariance, but discard stale motion
+    // cross-correlations. These are recovery uncertainties, not missing IMU data.
+    const Eigen::Matrix<double,9,9> calibration_cov = cov_.block<9,9>(9,9);
+    cov_.setZero();
+    cov_.block<3,3>(0,0) = Mat3d::Identity() * .01;  // 10 cm position sigma.
+    cov_.block<3,3>(3,3) = Mat3d::Identity() * .25;  // 0.5 m/s velocity sigma.
+    cov_.block<3,3>(6,6) = Mat3d::Identity() * std::pow(5 * M_PI / 180, 2);
+    cov_.block<9,9>(9,9) = calibration_cov;
+}
 
 bool ESKF::Predict(const ImuData &imu) {
     if (imu.t <= cur_t_) {

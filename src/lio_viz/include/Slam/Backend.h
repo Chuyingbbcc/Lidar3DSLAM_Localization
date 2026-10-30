@@ -4,6 +4,7 @@
 #pragma once
 
 #include <functional>
+#include <limits>
 #include <string>
 #include <map>
 #include <memory>
@@ -12,6 +13,9 @@
 #include "Optimization.h"
 #include "../DataType.h"
 #include "../Submap.h"
+#include "GPS.h"
+#include "Slam/WallAwareLoop.h"
+#include <fstream>
 
 
 struct LoopClosureOptions {
@@ -33,9 +37,30 @@ struct LoopClosureOptions {
    double valid_ratio_gate_ = 0.70;
    //
    int half_sw_size_ =10;
+   double min_time_sec_=30, min_travel_m_=20, query_interval_sec_=1, history_group_sec_=5;
+   double window_half_sec_=1, duplicate_sec_=5;
+   size_t max_candidates_=5;
+   std::vector<double> voxel_sizes_{2,1,.5};
+   double max_correction_m_=2, max_correction_deg_=10;
+   double point_distance_m_=.3, min_bidirectional_overlap_=.6, max_point_rmse_m_=.15;
+   size_t min_matched_points_=500;
+   bool full_3d_=true;
+   bool consecutive_verification_=false;
+   size_t consecutive_frames_=3, consecutive_min_matches_=75;
+   double consecutive_max_gap_sec_=.3, consensus_translation_m_=.25, consensus_rotation_deg_=2;
+   WallAwareLoopOptions wall_aware_;
 
 };
 struct BackendConfig {
+    bool use_gnss_=true;
+    bool gnss_xy_only_=false;
+    bool gnss_local_to_global_=false;
+    double lio_information_=1000, loop_information_=10, gnss_huber_delta_=2;
+    double gnss_information_xy_=.04, gnss_min_interval_sec_=1;
+    std::string fixed_loop_path_, gnss_diagnostics_path_;
+    std::string loop_candidate_log_path_;
+    GnssOptions gnss_options_;
+    std::string gnss_bag_path_;
     int submap_size_ = 30;
     std::string in_cloud_dir_;
     std::string in_kf_info_path_;
@@ -56,6 +81,12 @@ struct LoopPair {
    double overlap_ratio_ =0.0;
    double ndt_score_ =0.0;
    SE3d T_i_j_init_;
+   Mat6d information_shape_ = Mat6d::Identity();
+   size_t wall_correspondences_ = 0;
+   int wall_observable_modes_ = 0;
+   double wall_rmse_m_ = std::numeric_limits<double>::infinity();
+   size_t floor_correspondences_ = 0;
+   double floor_rmse_m_ = std::numeric_limits<double>::infinity();
 };
 
 struct LoopConstraint {
@@ -105,8 +136,13 @@ private:
     std::function<bool()> stop_requested_;
     bool stopped() const { return stop_requested_ && stop_requested_(); }
     std::vector<LoopPair> evaluation_loops_;
+    std::map<size_t,SE3d> query_poses_;
+    std::map<size_t,double> query_travel_;
+    std::ofstream loop_candidate_log_;
+    std::ofstream loop_consensus_log_;
 
     bool loadBackendConfig(const std::string& init_path);
+    void runFixedLoopGnssXY(loop_callback callback);
     void processNewKeyFrame(std::shared_ptr<KeyFrame> kf);
     void buildSubmapPointCloud();
 
@@ -153,10 +189,13 @@ private:
     std::shared_ptr<PointCloud> buildSlidingWindowCloud(size_t kf_id);
     std::pair<SE3d, NdtEval>runSlidingWindowNdt(size_t kf_i, size_t kf_j);
     void markLoopSlidingWindow(size_t kf_i, size_t kf_j);
+    std::string verifyConsecutiveLoop(size_t anchor, size_t query, const SE3d& measurement);
     double getYaw(const SE3d& pose);
     Mat3d makeYawRotation(double yaw);
     SE3d keepXYAndYawOnly(const SE3d& optimized_pose,
                      const SE3d& reference_pose);
+    SE3d keepXYZAndYawOnly(const SE3d& optimized_pose,
+                      const SE3d& reference_pose);
 
 
 

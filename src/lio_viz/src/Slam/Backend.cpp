@@ -19,12 +19,15 @@
 #include <iomanip>
 #include <cstdio>
 #include <stdexcept>
+#include <sstream>
 
 #include  "Submap.h"
 #include "Align.h"
 #include "common.h"
 #include <yaml-cpp/yaml.h>
 #include "RouteAlign.h"
+#include "io/ros_io_offline.h"
+#include "Slam/LoopVerification.h"
 #include <Eigen/Core>
 
 #include "../../include/common.h"
@@ -40,6 +43,71 @@ bool Backend::loadBackendConfig(const std::string &init_path) {
         }
 
         YAML::Node cfg = root["backend"];
+        backend_config_.gnss_options_ = loadGnssOptions(root);
+        if(cfg["use_gnss"]) backend_config_.use_gnss_=cfg["use_gnss"].as<bool>();
+        if(cfg["gnss_xy_only"]) backend_config_.gnss_xy_only_=cfg["gnss_xy_only"].as<bool>();
+        if(cfg["gnss_local_to_global"]) backend_config_.gnss_local_to_global_=cfg["gnss_local_to_global"].as<bool>();
+        auto positive=[&](const char* key,double& value){if(cfg[key])value=cfg[key].as<double>();if(!std::isfinite(value)||value<=0)throw std::invalid_argument(std::string("Invalid backend weight: ")+key);};
+        positive("lio_information",backend_config_.lio_information_);
+        positive("loop_information",backend_config_.loop_information_);
+        positive("gnss_huber_delta",backend_config_.gnss_huber_delta_);
+        if(cfg["gnss_information_xy"]) backend_config_.gnss_information_xy_=cfg["gnss_information_xy"].as<double>();
+        if(cfg["gnss_min_interval_sec"]) backend_config_.gnss_min_interval_sec_=cfg["gnss_min_interval_sec"].as<double>();
+        if(cfg["fixed_loop_path"]) backend_config_.fixed_loop_path_=cfg["fixed_loop_path"].as<std::string>();
+        if(cfg["gnss_diagnostics_path"]) backend_config_.gnss_diagnostics_path_=cfg["gnss_diagnostics_path"].as<std::string>();
+        if(backend_config_.gnss_xy_only_ &&
+           (!std::isfinite(backend_config_.gnss_information_xy_) || backend_config_.gnss_information_xy_<=0 ||
+            !std::isfinite(backend_config_.gnss_min_interval_sec_) || backend_config_.gnss_min_interval_sec_<=0 ||
+            (!backend_config_.gnss_local_to_global_ && backend_config_.fixed_loop_path_.empty()))) throw std::invalid_argument("Invalid XY-only GNSS settings");
+        if(cfg["loop_candidate_log_path"])backend_config_.loop_candidate_log_path_=cfg["loop_candidate_log_path"].as<std::string>();
+        if(cfg["loop"]) {
+            const auto loop=cfg["loop"];auto& o=backend_config_.loop_closure_options_;
+            auto number=[&](const char* key,double& value){if(loop[key])value=loop[key].as<double>();if(!std::isfinite(value)||value<=0)throw std::invalid_argument(std::string("Invalid loop option: ")+key);};
+            number("min_time_sec",o.min_time_sec_);number("min_travel_m",o.min_travel_m_);number("query_interval_sec",o.query_interval_sec_);number("history_group_sec",o.history_group_sec_);
+            number("window_half_sec",o.window_half_sec_);number("duplicate_sec",o.duplicate_sec_);number("xy_radius_m",o.kf_xy_thresh_);number("z_radius_m",o.kf_z_thresh_);
+            number("max_correction_m",o.max_correction_m_);number("max_correction_deg",o.max_correction_deg_);number("point_distance_m",o.point_distance_m_);number("min_bidirectional_overlap",o.min_bidirectional_overlap_);number("max_point_rmse_m",o.max_point_rmse_m_);
+            if(loop["max_candidates"])o.max_candidates_=loop["max_candidates"].as<size_t>();
+            if(loop["min_matched_points"])o.min_matched_points_=loop["min_matched_points"].as<size_t>();
+            if(loop["voxel_sizes_m"])o.voxel_sizes_=loop["voxel_sizes_m"].as<std::vector<double>>();
+            if(loop["full_3d"])o.full_3d_=loop["full_3d"].as<bool>();
+            if(loop["consecutive_verification"])o.consecutive_verification_=loop["consecutive_verification"].as<bool>();
+            if(loop["consecutive_frames"])o.consecutive_frames_=loop["consecutive_frames"].as<size_t>();
+            if(loop["consecutive_min_matches"])o.consecutive_min_matches_=loop["consecutive_min_matches"].as<size_t>();
+            number("consecutive_max_gap_sec",o.consecutive_max_gap_sec_);
+            number("consensus_translation_m",o.consensus_translation_m_);
+            number("consensus_rotation_deg",o.consensus_rotation_deg_);
+            if(loop["wall_aware"]) {
+                const auto wall=loop["wall_aware"];auto& w=o.wall_aware_;
+                if(wall["enabled"])w.enabled=wall["enabled"].as<bool>();
+                auto wall_number=[&](const char* key,double& value){if(wall[key])value=wall[key].as<double>();if(!std::isfinite(value)||value<=0)throw std::invalid_argument(std::string("Invalid wall-aware loop option: ")+key);};
+                wall_number("voxel_size_m",w.voxel_size_m);
+                wall_number("max_planarity_ratio",w.max_planarity_ratio);
+                wall_number("max_normal_z",w.max_normal_z);
+                wall_number("max_correspondence_m",w.max_correspondence_m);
+                wall_number("huber_delta_m",w.huber_delta_m);
+                wall_number("observable_eigen_ratio",w.observable_eigen_ratio);
+                wall_number("weak_information_ratio",w.weak_information_ratio);
+                if(wall["optimize_z"])w.optimize_z=wall["optimize_z"].as<bool>();
+                wall_number("min_horizontal_normal_z",w.min_horizontal_normal_z);
+                wall_number("floor_max_correspondence_m",w.floor_max_correspondence_m);
+                wall_number("floor_huber_delta_m",w.floor_huber_delta_m);
+                wall_number("floor_information_ratio",w.floor_information_ratio);
+                if(wall["min_points_per_voxel"])w.min_points_per_voxel=wall["min_points_per_voxel"].as<size_t>();
+                if(wall["max_iterations"])w.max_iterations=wall["max_iterations"].as<int>();
+                if(wall["min_correspondences"])w.min_correspondences=wall["min_correspondences"].as<size_t>();
+                if(wall["min_observable_modes"])w.min_observable_modes=wall["min_observable_modes"].as<int>();
+                if(wall["floor_min_correspondences"])w.floor_min_correspondences=wall["floor_min_correspondences"].as<size_t>();
+                if(!w.min_points_per_voxel||w.max_iterations<1||!w.min_correspondences||w.min_observable_modes<1||w.min_observable_modes>3||
+                   !w.floor_min_correspondences||w.max_planarity_ratio>=1||w.max_normal_z>=1||w.min_horizontal_normal_z>=1||
+                   w.observable_eigen_ratio>=1||w.weak_information_ratio>=1||w.floor_information_ratio>=1)
+                    throw std::invalid_argument("Invalid wall-aware loop geometry thresholds");
+            }
+            if(o.consecutive_verification_ && (o.consecutive_frames_<2 || o.consecutive_frames_>10 || !o.consecutive_min_matches_))throw std::invalid_argument("Invalid loop confirmation counts");
+            if(!o.max_candidates_||!o.min_matched_points_||o.min_bidirectional_overlap_>1||o.voxel_sizes_.empty())throw std::invalid_argument("Invalid loop verification options");
+            double previous=INFINITY;for(double size:o.voxel_sizes_){if(!std::isfinite(size)||size<=0||size>=previous)throw std::invalid_argument("Loop voxel sizes must decrease and be positive");previous=size;}
+        }
+        if (root["frontend"] && root["frontend"]["ros_bag_path"])
+            backend_config_.gnss_bag_path_ = root["frontend"]["ros_bag_path"].as<std::string>();
 
       // ndt_options
       IncNDTOptions inc_options;
@@ -114,7 +182,7 @@ bool Backend::loadBackendConfig(const std::string &init_path) {
 
 Backend::Backend(const std::string &init_path, std::function<bool()> stop_requested)
     : stop_requested_(std::move(stop_requested)) {
-  loadBackendConfig(init_path);
+  if (!loadBackendConfig(init_path)) throw std::runtime_error("Invalid backend configuration: " + init_path);
   submap_manager_ptr_ = std::make_unique<SubmapManager>(backend_config_.submap_size_);
 }
 
@@ -130,6 +198,38 @@ void Backend::processNewKeyFrame(std::shared_ptr<KeyFrame> kf) {
 
 void Backend::buildSubmaps() {
   loadKeyFrames(backend_config_.in_kf_info_path_, key_frames_, true);
+  if (!key_frames_.empty() && backend_config_.use_gnss_) {
+    std::map<double, GPSData> coverage;
+    bool audited = false;
+    if (!backend_config_.gnss_bag_path_.empty()) {
+      try {
+        RosIoOffline reader(backend_config_.gnss_bag_path_);
+        reader.io_options_.topics = {"/gps/fix"};
+        reader.io_options_.print_topics_ = false;
+        double latest = 0;
+        for (const auto& entry : key_frames_) latest = std::max(latest, entry.second->time_);
+        reader.io_options_.max_gps_time_ = latest + backend_config_.gnss_options_.max_gap_sec;
+        reader.onGps([&](const sensor_msgs::msg::NavSatFix& msg, double time) {
+          if (!std::isfinite(time) || time <= 0) return;
+          GPSData sample;
+          sample.t_ = time;
+          sample.valid_ = gnssFixUsable(msg, backend_config_.gnss_options_);
+          coverage.emplace(time, sample);
+        });
+        reader.onWait([&] { if (stopped()) throw std::runtime_error("GNSS audit interrupted"); });
+        audited = reader.go();
+      } catch (const std::exception& error) {
+        std::cerr << "[GNSS] Coverage audit failed: " << error.what() << "\n";
+      }
+    }
+    if (!audited) {
+      coverage.clear(); // Fail closed: retain odometry, disable unverifiable GNSS edges.
+      std::cerr << "[GNSS] Source coverage unavailable; disabling GNSS constraints\n";
+    }
+    const size_t rejected = applyGnssCoverage(key_frames_, coverage, backend_config_.gnss_options_.max_gap_sec);
+    std::cout << "[GNSS] Coverage audit rejected " << rejected << "/" << key_frames_.size()
+              << " keyframes (max interpolation gap " << backend_config_.gnss_options_.max_gap_sec << " s)\n";
+  }
   size_t last_id = 0;
   bool first = true;
   for (auto it : key_frames_) {
@@ -321,6 +421,14 @@ void Backend::runSubmapInsideOptimization() {
 // }
 
 void Backend::runKfRtkOptimization() {
+    if(!backend_config_.use_gnss_ || backend_config_.gnss_xy_only_) {
+        for(auto& entry:key_frames_) {
+            if(!backend_config_.use_gnss_) entry.second->lidar_pose_neu_=entry.second->lidar_pose_;
+            entry.second->fst_opti_pose_=entry.second->lidar_pose_neu_;
+            entry.second->scd_opti_pose_=entry.second->lidar_pose_neu_;
+        }
+        return;
+    }
     if (stopped()) return;
     // A failed or incomplete solve must retain the current aligned input.
     for (const auto& entry : key_frames_) {
@@ -533,6 +641,11 @@ void Backend::buildSubmapGraphNodes(std::vector<PoseGraphOptimizer::Node> &node_
 }
 
 void Backend::neuAlign() {
+    if(!backend_config_.use_gnss_) {
+        for(auto& entry:key_frames_)entry.second->lidar_pose_neu_=entry.second->lidar_pose_;
+        std::cout<<"[Backend] GNSS disabled; retaining LiDAR coordinates\n";
+        return;
+    }
     std::vector<AlignedPair>ap_vect;
     int count =0;
     for(auto& it : key_frames_) {
@@ -546,7 +659,7 @@ void Backend::neuAlign() {
           !kf->rtk_pose_.translation().allFinite() ||
           !kf->lidar_pose_.matrix().allFinite()) continue;
       ap.timestamp_ = kf->time_;
-      ap.p_odom_ = kf->lidar_pose_.translation();
+      ap.p_odom_ = (backend_config_.gnss_xy_only_ ? kf->loop_opti_pose_ : kf->lidar_pose_).translation();
       ap.p_rtk_ = kf->rtk_pose_.translation();
       ap_vect.emplace_back(ap);
         count++;
@@ -560,7 +673,7 @@ void Backend::neuAlign() {
     }
     //neu align
       Rigid2D align = RouteAlign::estimateRobustRigid2D(ap_vect, 2, 0.85, 10);
-      double z_offset = RouteAlign::estimateMedianZOffset(ap_vect, align);
+      double z_offset = backend_config_.gnss_xy_only_ ? 0.0 : RouteAlign::estimateMedianZOffset(ap_vect, align);
 
       Mat3d R_align = RouteAlign::yawToRotation3D(align.yaw_);
 
@@ -580,6 +693,7 @@ void Backend::neuAlign() {
           auto& kf = it.second;
           if (!kf) continue;
           kf->lidar_pose_neu_ = convert2neu(kf->lidar_pose_);
+          if(backend_config_.gnss_xy_only_) kf->loop_opti_pose_=convert2neu(kf->loop_opti_pose_);
 
           auto dist = (kf->lidar_pose_neu_.translation() - kf->rtk_pose_.translation()).norm();
           //std::cout<< "kf: " << kf->id_ << " dist: " << dist << std::endl;
@@ -775,15 +889,13 @@ std::shared_ptr<PointCloud>Backend::buildSlidingWindowCloud(size_t kf_id) {
     if (center == key_frames_.end() || !center->second) return cloud;
     const size_t half = static_cast<size_t>(std::max(0, backend_config_.loop_closure_options_.half_sw_size_));
     auto first = center;
-    for (size_t n = 0; n < half && first != key_frames_.begin(); ++n) --first;
-    auto last = center;
-    for (size_t n = 0; n <= half && last != key_frames_.end(); ++n) ++last;
-    for (auto it = first; it != last; ++it) {
-        const auto& kf = it->second;
-        if (!kf || !kf->cloud_ptr_ || !kf->loop_opti_pose_.matrix().allFinite()) continue;
-        const SE3d relative = center->second->loop_opti_pose_.inverse() * kf->loop_opti_pose_;
-        auto transformed = std::make_shared<PointCloud>(transformCloudCopy(kf->cloud_ptr_, relative));
-        cloud->append(transformed, transformed->size());
+    for(size_t n=0;n<half&&first!=key_frames_.begin();++n){auto previous=std::prev(first);if(center->second->time_-previous->second->time_>backend_config_.loop_closure_options_.window_half_sec_)break;first=previous;}
+    auto last=std::next(center);
+    for(size_t n=0;n<half&&last!=key_frames_.end();++n){if(last->second->time_-center->second->time_>backend_config_.loop_closure_options_.window_half_sec_)break;++last;}
+    auto pose=[&](size_t id){return query_poses_.empty()?key_frames_.at(id)->scd_opti_pose_:query_poses_.at(id);};
+    for(auto it=first;it!=last;++it){const auto& kf=it->second;if(!kf||!kf->cloud_ptr_)continue;
+        const auto relative=pose(center->first).inverse()*pose(it->first);
+        auto transformed=std::make_shared<PointCloud>(transformCloudCopy(kf->cloud_ptr_,relative));cloud->append(transformed,transformed->size());
     }
     return cloud;
 }
@@ -1211,29 +1323,14 @@ std::pair<SE3d, NdtEval>Backend::runSlidingWindowNdt(size_t kf_i, size_t kf_j) {
     }
 
 
-    IncNDT sw_ndt= (backend_config_.inc_ndt_options_);
-    if (stopped()) return {SE3d(), NdtEval{}};
-    sw_ndt.setStopRequested(stop_requested_);
-    sw_ndt.AddCloud(sw_l);
-    SE3d init_pose = key_frames_[kf_i]->loop_opti_pose_.inverse() * key_frames_[kf_j]->loop_opti_pose_;
-
-    sw_ndt.SetSourceCloud(sw_r);
-    bool ok = sw_ndt.Align(init_pose);
-    if (stopped()) return {SE3d(), NdtEval{}};
-    NdtEval eval = sw_ndt.computeScore(init_pose);
-    if (!ok || !init_pose.matrix().allFinite()) {
-        eval.score_ = std::numeric_limits<double>::infinity();
-        eval.valid_count_ = 0;
-        eval.valid_ratio_ = 0.0;
+    auto pose=[&](size_t id){return query_poses_.empty()?key_frames_.at(id)->scd_opti_pose_:query_poses_.at(id);};
+    SE3d init_pose=pose(kf_i).inverse()*pose(kf_j);NdtEval eval;
+    for(double size:backend_config_.loop_closure_options_.voxel_sizes_) {
+        auto options=backend_config_.inc_ndt_options_;options.voxel_size_=size;
+        IncNDT ndt(options);ndt.setStopRequested(stop_requested_);ndt.AddCloud(sw_l);ndt.SetSourceCloud(sw_r);
+        if(!ndt.Align(init_pose)||!init_pose.matrix().allFinite()||stopped())return {init_pose,NdtEval{}};
+        eval=ndt.computeScore(init_pose);
     }
-    if(!ok) {
-        std::cout<< "Inc_ndt failed"<<std::endl;
-    }
-    std::cout<<"--------------------"<<std::endl;
-    std::cout<<"ndt: " <<kf_i<<" vs "<<kf_j<<std::endl;
-    std::cout<< "score: "<<eval.score_<<std::endl;
-    std::cout<< "valid count: "<<eval.valid_count_<<std::endl;
-    std::cout<< "valid ratio: "<<eval.valid_ratio_<<std::endl;
     return {init_pose, eval};
 }
 
@@ -1244,10 +1341,10 @@ void Backend::markLoopSlidingWindow(size_t kf_i, size_t kf_j) {
     auto mark = [&](size_t center_id, int role) {
         auto center = key_frames_.find(center_id);
         if (center == key_frames_.end()) return;
-        auto first = center;
-        for (int n = 0; n < half && first != key_frames_.begin(); ++n) --first;
-        auto last = center;
-        for (int n = 0; n <= half && last != key_frames_.end(); ++n) ++last;
+        auto first=center;
+        for(int n=0;n<half&&first!=key_frames_.begin();++n){auto previous=std::prev(first);if(center->second->time_-previous->second->time_>options.window_half_sec_)break;first=previous;}
+        auto last=std::next(center);
+        for(int n=0;n<half&&last!=key_frames_.end();++n){if(last->second->time_-center->second->time_>options.window_half_sec_)break;++last;}
         for (auto it = first; it != last; ++it) {
             if (!it->second) continue;
             it->second->is_loop_closure_ = true;
@@ -1260,77 +1357,108 @@ void Backend::markLoopSlidingWindow(size_t kf_i, size_t kf_j) {
 }
 
 LoopPair Backend::findLoopPairsSlidingWindow(size_t kf_id) {
-    LoopClosureOptions options = backend_config_.loop_closure_options_;
-    LoopPair best_pair;
-    const auto query = key_frames_.find(kf_id);
-    if (query == key_frames_.end() || !query->second) return best_pair;
-    bool found_best = false;
-    size_t position = 0;
-    for (auto candidate = key_frames_.begin(); candidate != query; ++candidate, ++position) {
-        if (stopped()) return LoopPair{};
-        const size_t i = candidate->first;
-        if (kf_id - i < static_cast<size_t>(options.loop_min_kf_gap_)) continue;
-        const auto& kf_i = candidate->second;
-        const auto& kf_j = query->second;
-        if (!kf_i || !kf_j || !kf_i->loop_opti_pose_.matrix().allFinite() ||
-            !kf_j->loop_opti_pose_.matrix().allFinite()) continue;
-        const auto half = std::max(0, options.half_sw_size_);
-        if (position < static_cast<size_t>(half) ||
-            position + static_cast<size_t>(half) >= key_frames_.size()) continue;
-        Vec3d pi = kf_i->loop_opti_pose_.translation();
-        Vec3d pj = kf_j->loop_opti_pose_.translation();
-
-        double dist_xy = (pi.head<2>() - pj.head<2>()).norm();
-        double dist_z = std::abs(pi.z() - pj.z());
-
-        // std::cout<<pi(0) <<pi(1)<<pi(2)<<std::endl;
-        // std::cout<<pj(0)<< pj(1)<<pj(2)<<std::endl;
-        //std::cout<<"dist_xy: "<<dist_xy<<std::endl;
-
-        if (dist_xy > options.kf_xy_thresh_ || dist_z > options.kf_z_thresh_) {
-            continue;
-        }
-        //making sliding window of i
-        //making sliding window of j
-        std::cout<<"dist_xy: "<<dist_xy<<std::endl;
-        auto res =  runSlidingWindowNdt(i, kf_id);
-        SE3d delta = res.first;
-        NdtEval eval = res.second;
-        //gate
-        if (!delta.matrix().allFinite() || !std::isfinite(eval.score_) ||
-            !std::isfinite(eval.valid_ratio_)) {
-            continue;
-        }
-
-        if (eval.score_ > options.score_gate_) {
-            continue;
-        }
-
-        if (eval.valid_count_ < options.valid_count_gate_) {
-            continue;
-        }
-
-        if (eval.valid_ratio_ < options.valid_ratio_gate_) {
-            continue;
-        }
-        //add loop pair
-        LoopPair lp;
-        lp.T_i_j_init_ =delta;
-        lp.kf_idx_i_ = kf_i->id_;
-        lp.kf_idx_j_ = kf_j->id_;
-        lp.ndt_score_ = eval.score_;
-        lp.dist_xy_ = dist_xy;
-        if (!found_best) {
-           found_best=true;
-           best_pair = lp;
-        }
+    const auto& o=backend_config_.loop_closure_options_;LoopPair best;
+    auto query=key_frames_.find(kf_id);if(query==key_frames_.end())return best;
+    std::vector<std::pair<double,size_t>> candidates;
+    for(auto it=key_frames_.begin();it!=query;++it) {
+        const auto id=it->first;if(query->second->time_-it->second->time_<o.min_time_sec_ || query_travel_.at(kf_id)-query_travel_.at(id)<o.min_travel_m_)continue;
+        const auto d=query_poses_.at(kf_id).translation()-query_poses_.at(id).translation();
+        if(d.head<2>().norm()>o.kf_xy_thresh_||std::abs(d.z())>o.kf_z_thresh_)continue;
+        bool duplicate=false;for(const auto& loop:evaluation_loops_)if(std::abs(query->second->time_-key_frames_.at(loop.kf_idx_j_)->time_)<o.duplicate_sec_&&std::abs(it->second->time_-key_frames_.at(loop.kf_idx_i_)->time_)<o.duplicate_sec_)duplicate=true;
+        if(!duplicate)candidates.emplace_back(d.head<2>().norm(),id);
+    }
+    std::sort(candidates.begin(),candidates.end());std::vector<double> historical_times;size_t tested=0;
+    for(const auto& candidate:candidates) {
+        if(stopped())break;const size_t i=candidate.second;const double time=key_frames_.at(i)->time_;
+        bool same_group=false;for(double previous:historical_times)if(std::abs(previous-time)<o.history_group_sec_)same_group=true;
+        if(same_group)continue;if(tested++>=o.max_candidates_)break;historical_times.push_back(time);
+        const auto initial=query_poses_.at(i).inverse()*query_poses_.at(kf_id);const auto result=runSlidingWindowNdt(i,kf_id);
+        SE3d measurement=result.first;WallAwareLoopResult wall;double translation=INFINITY,angle=INFINITY;
+        std::string reason;LoopPointSupport forward,reverse;
+        std::shared_ptr<PointCloud> target,source;
+        if(!measurement.matrix().allFinite()||!std::isfinite(result.second.score_))reason="registration_failed";
         else {
-           if(lp.ndt_score_ < best_pair.ndt_score_) {
-              best_pair =lp;
-           }
+            target=buildSlidingWindowCloud(i);source=buildSlidingWindowCloud(kf_id);
+            if(o.wall_aware_.enabled) {
+                wall=refineWallPointToPlane(*target,*source,measurement,o.wall_aware_,stop_requested_);
+                if(!wall.success)reason=wall.reason;
+                else measurement=wall.pose;
+            }
+        }
+        if(reason.empty()) {
+            const auto correction=initial.inverse()*measurement;
+            translation=correction.translation().norm();angle=correction.so3().log().norm()*180/M_PI;
+            if(translation>o.max_correction_m_||angle>o.max_correction_deg_)reason="correction_too_large";
+        }
+        if(reason.empty()) {
+            forward=loopPointSupport(*target,*source,measurement,o.point_distance_m_);reverse=loopPointSupport(*source,*target,measurement.inverse(),o.point_distance_m_);
+            if(forward.ratio<o.min_bidirectional_overlap_||reverse.ratio<o.min_bidirectional_overlap_)reason="insufficient_overlap";
+            else if(forward.matched<o.min_matched_points_||reverse.matched<o.min_matched_points_)reason="insufficient_matches";
+            else if(forward.rmse>o.max_point_rmse_m_||reverse.rmse>o.max_point_rmse_m_)reason="point_rmse_too_large";
+            else reason="verified";
+        }
+        if(reason=="verified" && o.consecutive_verification_)reason=verifyConsecutiveLoop(i,kf_id,measurement);
+        if(loop_candidate_log_) {loop_candidate_log_<<i<<','<<kf_id<<','<<query->second->time_-time<<','<<candidate.first<<','<<result.second.score_<<','<<translation<<','<<angle<<','<<forward.ratio<<','<<reverse.ratio<<','<<forward.rmse<<','<<reverse.rmse<<','<<wall.correspondences<<','<<wall.rmse_m<<','<<wall.observable_modes<<','<<wall.weakest_observable_ratio<<','<<wall.floor_correspondences<<','<<wall.floor_rmse_m<<','<<reason<<'\n';loop_candidate_log_.flush();}
+        if(reason!="verified")continue;
+        const double quality=std::min(forward.ratio,reverse.ratio);
+        if(best.kf_idx_i_==INVALID_ID||quality>best.overlap_ratio_) {
+            best.kf_idx_i_=i;best.kf_idx_j_=kf_id;best.T_i_j_init_=measurement;best.ndt_score_=result.second.score_;best.dist_xy_=candidate.first;best.overlap_ratio_=quality;
+            if(o.wall_aware_.enabled)best.information_shape_=wall.information_shape;
+            best.wall_correspondences_=wall.correspondences;best.wall_observable_modes_=wall.observable_modes;best.wall_rmse_m_=wall.rmse_m;
+            best.floor_correspondences_=wall.floor_correspondences;best.floor_rmse_m_=wall.floor_rmse_m;
         }
     }
-    return best_pair;
+    return best;
+}
+
+// Consecutive scans verify one window-to-window constraint; they do not add graph edges.
+std::string Backend::verifyConsecutiveLoop(size_t anchor,size_t query,const SE3d& measurement) {
+    const auto& o=backend_config_.loop_closure_options_;
+    auto current=key_frames_.find(query);
+    std::vector<size_t> support;
+    for(size_t n=0;n<o.consecutive_frames_;++n) {
+        if(current==key_frames_.end())return "confirmation_missing_frames";
+        support.push_back(current->first);
+        if(n+1<o.consecutive_frames_) {
+            if(current==key_frames_.begin())return "confirmation_missing_frames";
+            auto previous=std::prev(current);
+            if(current->second->time_-previous->second->time_>o.consecutive_max_gap_sec_)return "confirmation_time_gap";
+            current=previous;
+        }
+    }
+    auto target=buildSlidingWindowCloud(anchor);
+    for(size_t id:support) {
+        if(stopped())return "confirmation_stopped";
+        auto source=key_frames_.at(id)->cloud_ptr_;
+        SE3d aligned=query_poses_.at(anchor).inverse()*query_poses_.at(id);
+        bool ok=source && !source->empty();
+        for(double voxel:o.voxel_sizes_) {
+            if(!ok)break;
+            auto options=backend_config_.inc_ndt_options_;options.voxel_size_=voxel;
+            IncNDT ndt(options);ndt.setStopRequested(stop_requested_);ndt.AddCloud(target);ndt.SetSourceCloud(source);
+            ok=ndt.Align(aligned) && aligned.matrix().allFinite();
+        }
+        if(ok && o.wall_aware_.enabled) {
+            const auto wall=refineWallPointToPlane(*target,*source,aligned,o.wall_aware_,stop_requested_);
+            ok=wall.success;
+            if(ok)aligned=wall.pose;
+        }
+        LoopPointSupport point_support;
+        double translation=INFINITY,angle=INFINITY;std::string result="registration_failed";
+        if(ok) {
+            point_support=loopPointSupport(*target,*source,aligned,o.point_distance_m_);
+            const auto disagreement=loopConsensusDisagreement(measurement,aligned,query_poses_.at(id),query_poses_.at(query));
+            translation=disagreement.translation_m;angle=disagreement.rotation_deg;
+            if(point_support.ratio<o.min_bidirectional_overlap_ || point_support.rmse>o.max_point_rmse_m_ || point_support.matched<o.consecutive_min_matches_)result="insufficient_support";
+            else if(translation>o.consensus_translation_m_ || angle>o.consensus_rotation_deg_)result="inconsistent_correction";
+            else result="confirmed";
+        }
+        if(loop_consensus_log_) {
+            loop_consensus_log_<<anchor<<','<<query<<','<<id<<','<<point_support.ratio<<','<<point_support.rmse<<','<<point_support.matched<<','<<translation<<','<<angle<<','<<result<<'\n';loop_consensus_log_.flush();
+        }
+        if(result!="confirmed")return "confirmation_"+result;
+    }
+    return "verified";
 }
 
 double Backend::getYaw(const SE3d& pose) {
@@ -1365,12 +1493,24 @@ SE3d Backend::keepXYAndYawOnly(const SE3d& optimized_pose,
     return SE3d(R_new, t_new);
 }
 
+SE3d Backend::keepXYZAndYawOnly(const SE3d& optimized_pose,
+                 const SE3d& reference_pose) {
+    const SE3d planar = keepXYAndYawOnly(optimized_pose, reference_pose);
+    Vec3d translation = planar.translation();
+    translation.z() = optimized_pose.translation().z();
+    return SE3d(planar.so3(), translation);
+}
+
 void Backend::updateLoopToKf(const std::map<size_t, SE3d>& optimized_map) {
     auto last = key_frames_.end();
     for (const auto& pose : optimized_map) {
         auto kf = key_frames_.find(pose.first);
         if (kf == key_frames_.end() || !kf->second || !pose.second.matrix().allFinite()) continue;
-        kf->second->loop_opti_pose_ = keepXYAndYawOnly(pose.second, kf->second->scd_opti_pose_);
+        const auto& options=backend_config_.loop_closure_options_;
+        if(options.full_3d_)kf->second->loop_opti_pose_=pose.second;
+        else if(options.wall_aware_.enabled && options.wall_aware_.optimize_z)
+            kf->second->loop_opti_pose_=keepXYZAndYawOnly(pose.second,kf->second->scd_opti_pose_);
+        else kf->second->loop_opti_pose_=keepXYAndYawOnly(pose.second,kf->second->scd_opti_pose_);
         last = kf;
     }
     if (last == key_frames_.end()) return;
@@ -1384,13 +1524,15 @@ void Backend::updateLoopToKf(const std::map<size_t, SE3d>& optimized_map) {
 
 void Backend::runKfLoopClosureLocalToGlobal(loop_callback callback) {
     if (stopped()) return;
+    const bool integrated=backend_config_.use_gnss_ && backend_config_.gnss_xy_only_ && backend_config_.gnss_local_to_global_;
+    if(backend_config_.use_gnss_ && backend_config_.gnss_xy_only_ && !integrated) { runFixedLoopGnssXY(callback); return; }
     evaluation_loops_.clear();
     if (key_frames_.empty()) {
         return;
     }
     LoopClosureOptions options = backend_config_.loop_closure_options_;
     clearKfsLoop();
-    PoseGraphOptimizer optimizer(OptimizationStage::SUBMAP_NDT);
+    PoseGraphOptimizer optimizer(integrated?OptimizationStage::GNSS_XY_PLANAR:OptimizationStage::SUBMAP_NDT);
     std::vector<PoseGraphOptimizer::Node>node_vect;
     std::vector<PoseGraphOptimizer::Edge>edge_vect;
 
@@ -1411,21 +1553,58 @@ void Backend::runKfLoopClosureLocalToGlobal(loop_callback callback) {
     loop_info(4,4) = 10.0;
     loop_info(5,5) = 10.0;
 
+    if(integrated) {
+        odom_info=backend_config_.lio_information_*Mat6d::Identity();
+        loop_info=backend_config_.loop_information_*Mat6d::Identity();
+    }
     Mat3d  gps_info = Mat3d::Zero();
     gps_info(0,0) = 0.0;
     gps_info(1,1) = 0.0;
     gps_info(2,2) = 0.0;
     optimizer.setStopRequested(stop_requested_);
+    if(integrated)gps_info(0,0)=gps_info(1,1)=backend_config_.gnss_information_xy_;
     optimizer.setGpsInfo(gps_info);
+    optimizer.setGpsHuberDelta(backend_config_.gnss_huber_delta_);
+    std::map<size_t,SE3d> initial;
+    std::set<size_t> selected_gnss;
+    double last_gnss=-INFINITY;
+    for(const auto& entry:key_frames_)initial[entry.first]=entry.second->loop_opti_pose_;
+    std::ofstream stage_log;
+    if(integrated && !backend_config_.gnss_diagnostics_path_.empty()) {
+        stage_log.open(backend_config_.gnss_diagnostics_path_+".stages.csv");
+        if(!stage_log)throw std::runtime_error("Cannot open joint stage diagnostics");
+        stage_log<<"stage,nodes,odom_edges,loop_edges,gnss_factors\n";
+    }
+    auto record_stage=[&](const char* stage) {
+        if(!integrated)return;
+        std::cout<<"[Joint local-to-global] "<<stage<<": nodes="<<node_vect.size()<<", loops="<<evaluation_loops_.size()<<", XY GNSS="<<selected_gnss.size()<<"\n";
+        if(stage_log){stage_log<<stage<<','<<node_vect.size()<<','<<(node_vect.empty()?0:node_vect.size()-1)<<','<<evaluation_loops_.size()<<','<<selected_gnss.size()<<'\n';stage_log.flush();}
+    };
 
-    bool has_last_loop_kf = false;
-    size_t last_kf_id = 0;
+    double last_query_time=-INFINITY;
+    query_poses_.clear();query_travel_.clear();double travel=0;SE3d previous_query;bool first_query=true;
+    for(const auto& entry:key_frames_) {
+        query_poses_[entry.first]=entry.second->lidar_pose_;
+        if(!first_query)travel+=(entry.second->lidar_pose_.translation()-previous_query.translation()).norm();
+        query_travel_[entry.first]=travel;previous_query=entry.second->lidar_pose_;first_query=false;
+    }
+    if(!backend_config_.loop_candidate_log_path_.empty()) {
+        loop_candidate_log_.open(backend_config_.loop_candidate_log_path_,std::ios::trunc);
+        if(!loop_candidate_log_)throw std::runtime_error("Cannot open loop candidate log");
+        loop_candidate_log_<<"kf_i,kf_j,time_separation_s,query_xy_m,ndt_score,correction_m,correction_deg,forward_overlap,reverse_overlap,forward_rmse_m,reverse_rmse_m,wall_correspondences,wall_rmse_m,wall_observable_modes,wall_weakest_eigen_ratio,floor_correspondences,floor_rmse_m,result\n";
+        loop_candidate_log_<<std::setprecision(17);
+        if(options.consecutive_verification_) {
+            loop_consensus_log_.open(backend_config_.loop_candidate_log_path_+".consensus.csv",std::ios::trunc);
+            if(!loop_consensus_log_)throw std::runtime_error("Cannot open loop consensus diagnostics");
+            loop_consensus_log_<<"anchor,query,support_frame,overlap,rmse_m,matched,translation_disagreement_m,rotation_disagreement_deg,result\n"<<std::setprecision(17);
+        }
+    }
 
     int cnt = 0;
     std::shared_ptr<KeyFrame> previous;
 
     for (auto& it : key_frames_) {
-        if (it.second) {
+        if (it.second && !integrated) {
             it.second->loop_opti_pose_ = it.second->scd_opti_pose_;
         }
     }
@@ -1444,7 +1623,11 @@ void Backend::runKfLoopClosureLocalToGlobal(loop_callback callback) {
         node.id_ = kf->id_;
         node.pose_init_ = kf->loop_opti_pose_;
         node.t_ = kf->time_;
-        node.has_gps_ = false; // This graph uses odometry and loop constraints only.
+        node.has_gps_ = integrated && kf->rtk_valid_ && kf->rtk_pose_.translation().head<2>().allFinite() && kf->time_-last_gnss>=backend_config_.gnss_min_interval_sec_;
+        if(node.has_gps_) {
+            node.gps_pos_=Vec3d(kf->rtk_pose_.translation().x(),kf->rtk_pose_.translation().y(),0);
+            last_gnss=kf->time_;selected_gnss.insert(kf->id_);
+        }
         node_vect.push_back(node);
         if (previous) {
             PoseGraphOptimizer::Edge edge;
@@ -1458,54 +1641,84 @@ void Backend::runKfLoopClosureLocalToGlobal(loop_callback callback) {
         previous = kf;
 
         //find loop pair
-        if (has_last_loop_kf && kf->id_ - last_kf_id < options.loop_min_kf_gap_)
-            continue;
+        if(kf->time_-last_query_time<options.query_interval_sec_)continue;
+        last_query_time=kf->time_;
         LoopPair best_pair = findLoopPairsSlidingWindow(kf->id_);
         if (best_pair.kf_idx_i_ == INVALID_ID || best_pair.kf_idx_j_ == INVALID_ID|| best_pair.ndt_score_ == std::numeric_limits<double>::infinity()) {
           continue;
         }
-        last_kf_id = kf->id_;
-        has_last_loop_kf = true;
+
 
         PoseGraphOptimizer::Edge loop_edge;
         loop_edge.id_i_ = best_pair.kf_idx_i_;
         loop_edge.id_j_ = best_pair.kf_idx_j_;
         loop_edge.T_i_j_ = best_pair.T_i_j_init_;
-        loop_edge.info_ = loop_info;
+        loop_edge.info_ = options.wall_aware_.enabled
+            ? loop_info(0,0) * best_pair.information_shape_
+            : loop_info;
         edge_vect.push_back(loop_edge);
         evaluation_loops_.push_back(best_pair);
 
-        //
+        // Keep every accepted loop window marked so the final replay shows the
+        // complete set of loop closures, rather than only the latest pair.
         markLoopSlidingWindow(best_pair.kf_idx_i_, best_pair.kf_idx_j_);
 
         if (stopped()) return;
         //optimize current edge and node
         optimizer.setEdges(edge_vect);
         optimizer.setNodes(node_vect);
+        record_stage("local");
         bool ok = optimizer.optimize(30);
         if (!ok) {
-            std::cout << "Submap graph optimization failed" << std::endl;
-            return;
+            throw std::runtime_error("Local graph optimization failed");
         }
         std::map<size_t, SE3d> optimized_poses_local;
         optimizer.getOptimizedPoses(optimized_poses_local);
 
-        updateLoopToKf(optimized_poses_local);
+        if(integrated) {
+            for(const auto& pose:optimized_poses_local)key_frames_.at(pose.first)->loop_opti_pose_=pose.second;
+            // Continue the unprocessed baseline with the last optimized XY/yaw correction.
+            // Inspection includes future window frames, which must share this correction.
+            if(!optimized_poses_local.empty()) {
+                const auto& last=*optimized_poses_local.rbegin();
+                const Mat3d delta=last.second.rotationMatrix()*initial.at(last.first).rotationMatrix().transpose();
+                const SO3d rotation=SO3d::exp(Vec3d(0,0,std::atan2(delta(1,0),delta(0,0))));
+                Vec3d translation=last.second.translation()-rotation*initial.at(last.first).translation();translation.z()=0;
+                for(auto next=key_frames_.upper_bound(last.first);next!=key_frames_.end();++next) {
+                    const auto& reference=initial.at(next->first);
+                    next->second->loop_opti_pose_=SE3d(rotation*reference.so3(),rotation*reference.translation()+translation);
+                }
+            }
+        } else updateLoopToKf(optimized_poses_local);
         for (auto& node : node_vect) node.pose_init_ = key_frames_.at(node.id_)->loop_opti_pose_;
-        if (callback) callback(cnt);
+        if (callback) callback(static_cast<int>(std::min(key_frames_.size(),static_cast<size_t>(cnt+options.half_sw_size_))));
     }
     if (stopped()) return;
     //After all local optimization down. run global optimization
     optimizer.setNodes(node_vect);
     optimizer.setEdges(edge_vect);
+    record_stage("global");
     bool ok = optimizer.optimize(30);
     if (!ok) {
-        std::cout << "Global optimization failed" << std::endl;
-        return;
+        throw std::runtime_error("Global optimization failed");
     }
     std::map<size_t, SE3d> optimized_poses_global;
     optimizer.getOptimizedPoses(optimized_poses_global);
-    updateLoopToKf(optimized_poses_global);
+    if(integrated) {
+        for(const auto& pose:optimized_poses_global)key_frames_.at(pose.first)->loop_opti_pose_=pose.second;
+        if(!backend_config_.gnss_diagnostics_path_.empty()) {
+            std::ofstream log(backend_config_.gnss_diagnostics_path_);
+            if(!log)throw std::runtime_error("Cannot open joint GNSS diagnostics");
+            log<<"kf_id,time,gnss_valid,selected,initial_xy_residual_m,final_xy_residual_m,pose_change_m,z_change_m\n"<<std::setprecision(17);
+            for(const auto& entry:key_frames_) {
+                const auto& kf=entry.second;const auto a=initial.at(entry.first).translation(),b=kf->loop_opti_pose_.translation();
+                log<<entry.first<<','<<kf->time_<<','<<kf->rtk_valid_<<','<<selected_gnss.count(entry.first)<<',';
+                if(kf->rtk_valid_)log<<(a-kf->rtk_pose_.translation()).head<2>().norm()<<','<<(b-kf->rtk_pose_.translation()).head<2>().norm();else log<<"nan,nan";
+                log<<','<<(b-a).norm()<<','<<b.z()-a.z()<<'\n';
+            }
+            log.close();if(!log)throw std::runtime_error("Cannot finish joint diagnostics");
+        }
+    } else updateLoopToKf(optimized_poses_global);
     if (callback) callback(node_vect.size());
 }
 
@@ -2007,4 +2220,73 @@ void Backend::runTest(loop_callback callback) {
 
    }
    return;
+}
+
+
+// Fixed measurements isolate the effect of GNSS from loop detection or re-registration.
+void Backend::runFixedLoopGnssXY(loop_callback callback) {
+    if(key_frames_.empty()) throw std::runtime_error("No keyframes for GNSS trial");
+    clearKfsLoop();
+    evaluation_loops_.clear();
+    std::ifstream input(backend_config_.fixed_loop_path_);
+    if(!input) throw std::runtime_error("Cannot read fixed loop constraints");
+    std::string line;
+    while(std::getline(input,line)) {
+        if(line.empty() || line[0]=='#') continue;
+        std::istringstream row(line); LoopPair loop; Vec3d t; double x,y,z,w;
+        if(!(row>>loop.kf_idx_i_>>loop.kf_idx_j_>>t.x()>>t.y()>>t.z()>>x>>y>>z>>w>>loop.ndt_score_))
+            throw std::runtime_error("Malformed fixed loop constraint");
+        Eigen::Quaterniond q(w,x,y,z);
+        if(!t.allFinite() || !q.coeffs().allFinite() || std::abs(q.norm()-1)>1e-4 ||
+           !key_frames_.count(loop.kf_idx_i_) || !key_frames_.count(loop.kf_idx_j_))
+            throw std::runtime_error("Invalid fixed loop constraint");
+        q.normalize();loop.T_i_j_init_=SE3d(q,t);evaluation_loops_.push_back(loop);
+    }
+    if(evaluation_loops_.empty()) throw std::runtime_error("No fixed loop constraints");
+    std::vector<PoseGraphOptimizer::Node> nodes;
+    std::vector<PoseGraphOptimizer::Edge> edges;
+    std::map<size_t,SE3d> initial;
+    std::set<size_t> selected;
+    std::shared_ptr<KeyFrame> previous;
+    double last_gnss=-INFINITY;
+    for(const auto& entry:key_frames_) {
+        const auto& kf=entry.second;
+        PoseGraphOptimizer::Node node; node.id_=entry.first;node.t_=kf->time_;node.pose_init_=kf->loop_opti_pose_;
+        node.has_gps_=kf->rtk_valid_ && kf->rtk_pose_.translation().head<2>().allFinite() && kf->time_-last_gnss>=backend_config_.gnss_min_interval_sec_;
+        if(node.has_gps_) {node.gps_pos_=Vec3d(kf->rtk_pose_.translation().x(),kf->rtk_pose_.translation().y(),0);last_gnss=kf->time_;selected.insert(entry.first);}
+        nodes.push_back(node);initial[entry.first]=node.pose_init_;
+        if(previous) {PoseGraphOptimizer::Edge edge;edge.id_i_=previous->id_;edge.id_j_=kf->id_;
+            edge.T_i_j_=previous->lidar_pose_neu_.inverse()*kf->lidar_pose_neu_;edge.info_=1000*Mat6d::Identity();edges.push_back(edge);}
+        previous=kf;
+    }
+    if(selected.empty()) throw std::runtime_error("No usable GNSS constraints after coverage audit");
+    for(const auto& loop:evaluation_loops_) {PoseGraphOptimizer::Edge edge;edge.id_i_=loop.kf_idx_i_;edge.id_j_=loop.kf_idx_j_;
+        edge.T_i_j_=loop.T_i_j_init_;edge.info_=10*Mat6d::Identity();edge.is_loop_=true;edges.push_back(edge);}
+    PoseGraphOptimizer optimizer(OptimizationStage::GNSS_XY_PLANAR);
+    Mat3d information=Mat3d::Zero();information(0,0)=information(1,1)=backend_config_.gnss_information_xy_;
+    optimizer.setGpsInfo(information);optimizer.setNodes(nodes);optimizer.setEdges(edges);optimizer.setStopRequested(stop_requested_);
+    std::cout<<"[GNSS XY] Joint graph: "<<nodes.size()<<" nodes, "<<evaluation_loops_.size()<<" fixed loops, "<<selected.size()
+             <<" horizontal factors; information="<<backend_config_.gnss_information_xy_<<"; height disabled; baseline Z/roll/pitch preserved; Huber delta=2\n";
+    if(!optimizer.optimize(30)) {if(stopped())return;throw std::runtime_error("XY-only joint optimization failed");}
+    std::map<size_t,SE3d> optimized;optimizer.getOptimizedPoses(optimized);
+    if(optimized.size()!=key_frames_.size()) throw std::runtime_error("Incomplete XY-only optimization");
+    for(const auto& pose:optimized) key_frames_.at(pose.first)->loop_opti_pose_=pose.second;
+    if(!backend_config_.gnss_diagnostics_path_.empty()) {
+        std::ofstream log(backend_config_.gnss_diagnostics_path_);
+        if(!log)throw std::runtime_error("Cannot open GNSS diagnostics");
+        log<<"kf_id,time,gnss_valid,selected,initial_xy_residual_m,final_xy_residual_m,pose_change_m,z_change_m\n"<<std::setprecision(17);
+        for(const auto& entry:key_frames_) {
+            const auto& kf=entry.second;const auto a=initial.at(entry.first).translation(),b=kf->loop_opti_pose_.translation();
+            log<<entry.first<<','<<kf->time_<<','<<kf->rtk_valid_<<','<<selected.count(entry.first)<<',';
+            if(kf->rtk_valid_)log<<(a-kf->rtk_pose_.translation()).head<2>().norm()<<','<<(b-kf->rtk_pose_.translation()).head<2>().norm();else log<<"nan,nan";
+            log<<','<<(b-a).norm()<<','<<b.z()-a.z()<<'\n';
+        }
+        log.close();if(!log)throw std::runtime_error("Cannot complete GNSS diagnostics");
+    }
+    // Inspect the reused pairs against the same final joint solution.
+    for(const auto& loop:evaluation_loops_) {
+        if(stopped())return;
+        markLoopSlidingWindow(loop.kf_idx_i_,loop.kf_idx_j_);
+        if(callback)callback(static_cast<int>(key_frames_.size()));
+    }
 }

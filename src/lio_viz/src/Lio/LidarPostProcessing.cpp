@@ -8,6 +8,13 @@
 #include <mutex>
 #include <iostream>
 
+namespace {
+void updatePeak(std::atomic<size_t>& peak,size_t depth) {
+    size_t previous=peak.load();
+    while(depth>previous&&!peak.compare_exchange_weak(previous,depth)){}
+}
+}
+
 
 
 
@@ -45,6 +52,7 @@ item.scan= std::move(scan);
       return;
   }
   heap_.push(std::move(item));
+  updatePeak(max_heap_depth_,heap_.size());
 }
 cv_heap_.notify_one();
 }
@@ -124,6 +132,7 @@ void LidarReorderBuffer::commitLoop() {
           {
              std::lock_guard<std::mutex>lk_ready(m_ready_);
              ready_.push_back(std::make_shared<PointCloud>(std::move(item.scan)));
+             updatePeak(max_ready_depth_,ready_.size());
           }
           cv_ready_.notify_one();
           lk.lock();
@@ -149,6 +158,7 @@ void LidarReorderBuffer::commitLoop() {
             std::lock_guard<std::mutex>lk_ready(m_ready_);
 
             ready_.push_back(std::make_shared<PointCloud>(std::move(item.scan)));
+            updatePeak(max_ready_depth_,ready_.size());
          }
           cv_ready_.notify_one();
           lk.lock();

@@ -28,10 +28,31 @@ struct ESKFState {
  Vec3d ba_;
 };
 
+struct StationaryImuOptions {
+    double duration_sec = 5.0;
+    size_t min_samples = 500;
+    double max_gap_sec = 0.05;
+    double max_gyro_mean = 0.05;       // rad/s; also limits bias accepted as stationary.
+    double max_gyro_std = 0.02;        // Norm of per-axis standard deviations, rad/s.
+    double max_acc_std = 0.15;         // Norm of per-axis standard deviations, m/s^2.
+    double max_gravity_error = 0.5;    // |mean acceleration magnitude - 9.8|, m/s^2.
+};
+
+struct StationaryImuResult {
+    bool valid = false;
+    std::string reason;
+    size_t samples = 0;
+    double duration_sec = 0;
+    Vec3d mean_acc = Vec3d::Zero(), gyro_bias = Vec3d::Zero();
+    Vec3d gravity = Vec3d::Zero(); // In the initial sensor/map frame.
+    double acc_std = 0, gyro_std = 0;
+};
+
 class ESKF {
 public:
 struct ESKFOptions {
   double imu_dt_ = 0.01;
+  StationaryImuOptions imu_initialization;
   //Q
   double gyro_var_ = 1e-5;
   double acc_var_ = 1e-2;
@@ -46,6 +67,12 @@ struct ESKFOptions {
 };
 
 ESKF(const ESKFOptions& opt);
+static StationaryImuResult EstimateStationary(const std::vector<ImuData>& samples,
+                                               const StationaryImuOptions& options);
+StationaryImuResult InitializeStationary(const std::vector<ImuData>& samples);
+Vec3d GetGravity() const { return g_; }
+Vec18d GetCovarianceDiagonal() const { return cov_.diagonal(); }
+void ReanchorAfterGap(double time, const SE3d& imu_pose, const Vec3d& velocity);
 bool Predict(const ImuData& imu);
 bool ObserveSE3(const SE3d& pose);
 ESKFState GetNorminalState() const;

@@ -104,6 +104,7 @@ file(GLOB LIO_CORE_SOURCES CONFIGURE_DEPENDS
 list(REMOVE_ITEM LIO_CORE_SOURCES  ${SRC_PATH}/Slam/Optimization.cpp)
 
 add_library(lio_core ${LIO_CORE_SOURCES})
+set_property(TARGET lio_core PROPERTY CXX_STANDARD 17)
 target_include_directories(lio_core PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
@@ -146,6 +147,24 @@ add_executable(evaluate_system src/evaluate_system.cpp)
 set_property(TARGET evaluate_system PROPERTY CXX_STANDARD 17)
 target_link_libraries(evaluate_system lio_core)
 
+# Preferred offline, dataset-manifest entry point. Keep evaluate_system as a
+# backwards-compatible name for existing scripts and direct-argument usage.
+add_executable(evaluate_experiment src/evaluate_system.cpp)
+set_property(TARGET evaluate_experiment PROPERTY CXX_STANDARD 17)
+target_link_libraries(evaluate_experiment lio_core)
+
+add_executable(localization_test src/localization_test.cpp)
+set_property(TARGET localization_test PROPERTY CXX_STANDARD 17)
+target_link_libraries(localization_test lio_core)
+
+add_executable(frontend_replay src/frontend_replay.cpp)
+set_property(TARGET frontend_replay PROPERTY CXX_STANDARD 17)
+target_link_libraries(frontend_replay lio_core)
+
+add_executable(backend_replay src/backend_replay.cpp)
+set_property(TARGET backend_replay PROPERTY CXX_STANDARD 17)
+target_link_libraries(backend_replay lio_core)
+
 #install(TARGETS
 #        opengl_vis_node
 # mapping_node
@@ -159,7 +178,11 @@ install(TARGETS
         pose_graph_optimizer
         opengl_vis_node
         mapping_node
+        evaluate_experiment
         evaluate_system
+        localization_test
+        frontend_replay
+        backend_replay
         ARCHIVE DESTINATION lib
         LIBRARY DESTINATION lib
         RUNTIME DESTINATION lib/${PROJECT_NAME}
@@ -171,10 +194,36 @@ install(DIRECTORY include DESTINATION include)
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
 
+  ament_add_gtest(test_fixed_map_localization test/test_fixed_map_localization.cpp)
+  set_property(TARGET test_fixed_map_localization PROPERTY CXX_STANDARD 17)
+  target_link_libraries(test_fixed_map_localization lio_core Eigen3::Eigen)
+  add_test(NAME test_localization_mode_cli
+      COMMAND "${PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test/test_localization_mode_cli.py" "$<TARGET_FILE:localization_test>")
+  set_tests_properties(test_localization_mode_cli PROPERTIES TIMEOUT 120)
+
   ament_add_gtest(test_lio_core test/test_io.cpp)
   target_link_libraries(test_lio_core lio_core Eigen3::Eigen)
   ament_add_gtest(test_scan_timing test/test_scan_timing.cpp)
   target_link_libraries(test_scan_timing lio_core Eigen3::Eigen)
+  ament_add_gtest(test_loop_verification test/test_loop_verification.cpp)
+  target_link_libraries(test_loop_verification lio_core Eigen3::Eigen)
+  ament_add_gtest(test_gravity_alignment test/test_gravity_alignment.cpp)
+  target_link_libraries(test_gravity_alignment lio_core Eigen3::Eigen)
+  ament_add_gtest(test_gnss_coverage test/test_gnss_coverage.cpp)
+  target_link_libraries(test_gnss_coverage lio_core Eigen3::Eigen)
+  ament_add_gtest(test_imu_recovery test/test_imu_recovery.cpp)
+  target_link_libraries(test_imu_recovery lio_core Eigen3::Eigen)
+  ament_add_gtest(test_imu_prediction_log test/test_imu_prediction_log.cpp)
+  target_link_libraries(test_imu_prediction_log lio_core Eigen3::Eigen)
+  ament_add_gtest(test_deskew_pipeline test/test_deskew_pipeline.cpp)
+  target_link_libraries(test_deskew_pipeline lio_core Eigen3::Eigen)
+  set_tests_properties(test_deskew_pipeline PROPERTIES TIMEOUT 120)
+  ament_add_gtest(test_deskew test/test_deskew.cpp)
+  target_link_libraries(test_deskew lio_core Eigen3::Eigen)
+  ament_add_gtest(test_lidar_imu_frames test/test_lidar_imu_frames.cpp)
+  target_link_libraries(test_lidar_imu_frames lio_core Eigen3::Eigen)
+  ament_add_gtest(test_imu_initialization test/test_imu_initialization.cpp)
+  target_link_libraries(test_imu_initialization lio_core Eigen3::Eigen)
   ament_add_gtest(test_imu_units test/test_imu_units.cpp)
   target_link_libraries(test_imu_units lio_core Eigen3::Eigen)
   ament_add_gtest(test_shutdown test/test_shutdown.cpp)

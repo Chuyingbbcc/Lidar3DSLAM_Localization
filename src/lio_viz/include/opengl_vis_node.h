@@ -77,6 +77,7 @@ struct RenderLayerConfig {
     bool draw_route_ = true;
     glm::vec3 map_color_ = {0.0f, 0.0f, 0.0f};
     glm::vec3 route_color_ = {0.0f, 0.0f, 0.0f};
+    float route_width_ = 2.0f;
 };
 
 class OpenGLPointCloudNode : public rclcpp::Node {
@@ -96,6 +97,7 @@ private:
     void on_pcd_path(const std_msgs::msg::String::SharedPtr msg);
     void on_key_frame_callback(const lio_msgs::msg::FrameData::SharedPtr msg);
     void consume_pending_frames();
+    void resolveGravityAlignment(const std::string& cloud_path);
     void append_frame_to_layer(const PendingFrame& pf, const std::vector<PointVertex>& local_points, const RenderLayerConfig& config, std::vector<PointVertex>& map_points, std::vector<glm::vec3>& route_points);
     bool load_point_cloud_local(const std::string &path, std::vector<PointVertex>& out_points);
     void merge_points(const std::vector<PointVertex>& new_points);
@@ -105,7 +107,7 @@ private:
     void upload_route_to_gpu(const std::vector<glm::vec3>&route_pts, GLuint route_vbo, bool& ready, size_t& count);
 
     void draw_points_layer(const glm::mat4 &mvp, GLuint vao, bool vbo_ready, size_t num_points, const glm::vec3& color, bool current_frame = false);
-    void draw_route_layer(const glm::mat4& mvp, GLuint vao, bool vbo_ready, size_t num_points_route, const glm::vec3& color);
+    void draw_route_layer(const glm::mat4& mvp, GLuint vao, bool vbo_ready, size_t num_points_route, const glm::vec3& color, float width);
 
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr sub_;
     rclcpp::Subscription<lio_msgs::msg::FrameData>::SharedPtr frame_sub_;
@@ -119,12 +121,13 @@ private:
     bool loop_inspection_mode_{false};
 
     bool initialized_ = false;
+    std::string vis_config_path_;
     RenderLayerConfig layer1_;
     RenderLayerConfig layer2_;
 
     bool show_current_frame_ = true;
     bool current_frame_override_ = false;
-    bool show_accumulated_map_ = false;
+    bool show_accumulated_map_ = true;
     bool accumulated_map_override_ = false;
     std::vector<PointVertex> current_frame_points_;
     GLuint current_frame_vao_ = 0;
@@ -194,10 +197,15 @@ private:
     //GLuint loop_vbo_ = 0;
 
 
-   bool intensity_equalize_ = true;
+   bool intensity_equalize_ = false;
    std::array<float, 256> intensity_cdf_ {};
    void loadIntensityDistribution(const std::string& keyframe_path, bool single_cloud = false);
    std::string standalone_cloud_path_;
+   bool gravity_aligned_ = false;
+   bool gravity_aligned_override_ = false;
+   bool gravity_alignment_checked_ = false;
+   bool gravity_alignment_ready_ = false;
+   glm::mat4 gravity_alignment_transform_ = glm::mat4(1.0f);
    VideoRecorder recorder_;
    std::string recording_directory_;
    std::string recording_path_;
@@ -213,7 +221,7 @@ private:
    float driving_distance_ = 6.0f;
    float driving_height_ = 2.5f;
    float driving_lookahead_ = 12.0f;
-   std::string color_mode_ = "height_intensity";
+   std::string color_mode_ = "intensity";
    float color_ground_z_ = -1.7f;
    float intensity_min_ = 0.0f;
    float intensity_max_ = 1.0f;
@@ -223,9 +231,10 @@ private:
    bool hide_ground_ = true;
    bool hide_ground_override_ = false;
    float ground_z_ = 0.0f;
+   bool hide_negative_x_ = false;
    bool show_loop_pairs_ = true;
    bool dim_non_loop_ = false;
-   float non_loop_brightness_ = 0.25f;
+   float non_loop_brightness_ = 1.0f;
    std::array<std::unordered_map<PtrVoxelKey, VoxelAccum, PtrVoxelHash>, 3> display_voxels_[2];
    GLuint shader_program_ =0;
    GLuint route_shader_program_ =0;

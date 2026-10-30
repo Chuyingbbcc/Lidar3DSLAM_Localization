@@ -13,6 +13,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+#include <cstdint>
 
 class ThreadPool {
 public:
@@ -31,6 +32,8 @@ public:
     bool enqueue_drop_oldest(std::function<void()> f);
 
     size_t num_queued() const;
+    size_t max_queued() const { return max_queued_.load(); }
+    size_t rejected() const { return rejected_.load(); }
     void stop();
 private:
     void start(std::size_t n_threads);
@@ -42,6 +45,8 @@ private:
     std::atomic<bool> stopped_{false};
 
     std::size_t max_queue_;
+    std::atomic<size_t> max_queued_{0};
+    std::atomic<size_t> rejected_{0};
 };
 
 

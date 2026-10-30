@@ -38,8 +38,12 @@ public:
   ~IncNDTOdometry() override = default;
   size_t AddCloud(std::shared_ptr<PointCloud>&pointcloud, SE3d& pose,bool use_guess= false) override;
   void SaveSubMap(const std::shared_ptr<PointCloud>point_cloud) override;
+  bool lastUsedImuPrediction() const { return last_used_imu_prediction_; }
+  bool lastAlignmentSucceeded() const { return last_alignment_succeeded_; }
   // Add a submap in the future
 private:
+  bool last_used_imu_prediction_ = false;
+  bool last_alignment_succeeded_ = false;
   std::shared_ptr<IncNDT> inc_ndt_;
   std::vector<SE3d>estimated_vec_;
 };

@@ -25,12 +25,13 @@ struct FrontendOptions{
    std:: string ros_bag_path_;
    RosIoOffline::IoOptions io_options_;
    LioOptions lio_options_;
+   GnssOptions gnss_options_;
 };
 
 class Frontend {
     public:
     Frontend();
-    Frontend(const std::string& init_path );
+    Frontend(const std::string& init_path, bool localization_test = false);
     bool init();
     bool Run();
     void stop();
@@ -49,6 +50,7 @@ class Frontend {
 
     private:
     bool loadFrontendConfig();
+    bool localization_test_ = false;
 
     void saveCurrentKeyFrames();
     std::string init_path_ = "";

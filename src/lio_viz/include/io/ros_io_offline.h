@@ -22,6 +22,7 @@ public:
         bool print_topics_ =true;
         bool down_sample_  = true;
         bool finish_imu_scan_ = false;  // At frame limit, read IMU through final scan end.
+        double max_gps_time_ = 0; // GNSS-only coverage audit: include fixes through this sensor time.
         size_t max_lidar_frames_ = 0;  // 0 reads the entire bag.
     };
     RosIoOffline(){};
